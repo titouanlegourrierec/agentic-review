@@ -1,0 +1,42 @@
+{
+ "figures": [
+  {
+   "id": "pipeline",
+   "type": "diagram",
+   "file": "pipeline.svg",
+   "title": "A method as a pipeline",
+   "caption": "A template to adapt: boxes for stages (filled when learned, outlined when fixed), arrows for data flow, a dashed loop for repetition. Replace every word with the review's own.",
+   "place": {
+    "section": "Taxonomy",
+    "after": "paragraph"
+   }
+  },
+  {
+   "id": "slope",
+   "type": "custom",
+   "file": "slope.svg",
+   "title": "Every headline gain shrinks under the same paper's stricter comparison",
+   "caption": "A custom figure (a slope chart, which no built-in type draws): three papers from the k-space review whose headline and stricter results are single PSNR values. Each line joins one paper's headline gain to its own stricter comparison.",
+   "place": {
+    "section": "Larger gains come from weaker setups",
+    "after": "heading"
+   },
+   "source": {
+    "section": "Larger gains come from weaker setups"
+   },
+   "axes": {
+    "y": {
+     "data": [
+      0,
+      5
+     ],
+     "px": [
+      300,
+      60
+     ],
+     "label": "PSNR gain (dB)"
+    }
+   }
+  }
+ ]
+}

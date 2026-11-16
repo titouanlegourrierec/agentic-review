@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""Write 2-merged/corpus_index.md: one table row per record of 2-merged/corpus.jsonl.
+
+Year and venue are the version of record (from an accepted CrossRef match in ref_check) when known; a VoR year
+in the future (issue date) falls back to the record's year. Extra columns: review.json `display_fields`
+(default ["task"]).
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+from collections import Counter
+
+import arlib
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-index", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    src = rdir / arlib.CORPUS
+    if not src.exists():
+        print(f"missing {arlib.CORPUS}")
+        return 1
+    try:
+        recs = arlib.load_jsonl(src)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    extra = review.get("display_fields") or ["task"]
+    recs.sort(
+        key=lambda r: (
+            arlib.tier_order(arlib.map_tier(r.get("tier"), review)),
+            arlib.to_int(arlib.cite_year(r)),
+            r.get("key") or "",
+        )
+    )
+    tiers = Counter(arlib.map_tier(r.get("tier"), review) for r in recs)
+    status = Counter((r.get("ref_check") or {}).get("status", "not checked") for r in recs)
+    cols = ["key", "tier", "family", *extra, "year", "first author", "title", "venue", "ref", "found_by"]
+    out = [
+        "# Corpus index (merged, reference-checked)",
+        "",
+        f"{len(recs)} records. Tiers: "
+        + ", ".join(f"{t} {tiers[t]}" for t in sorted(tiers, key=arlib.tier_order))
+        + ". Reference check: "
+        + ", ".join(f"{k} {v}" for k, v in status.most_common())
+        + ".",
+        "",
+        "year / venue = version of record from CrossRef where the DOI was verified, else as recorded. "
+        "ref = mechanical reference-check status.",
+        "",
+        "| " + " | ".join(cols) + " |",
+        "|" + "---|" * len(cols),
+    ]
+    for r in recs:
+        cells = [
+            r.get("key"),
+            arlib.map_tier(r.get("tier"), review),
+            r.get("family"),
+            *[r.get(f) for f in extra],
+            arlib.cite_year(r),
+            r.get("first_author"),
+            r.get("title"),
+            arlib.venue_vor(r),
+            (r.get("ref_check") or {}).get("status", "not checked"),
+            ",".join(r.get("found_by") or []),
+        ]
+        out.append("| " + " | ".join(arlib.md_cell(c) for c in cells) + " |")
+    dest = rdir / "2-merged" / "corpus_index.md"
+    arlib.atomic_write_text(dest, "\n".join(out) + "\n")
+    print(f"records={len(recs)} tiers={dict(tiers)} ref={dict(status)}")
+    print(f"wrote {arlib.rel(rdir, dest)}")
+    unknown = [t for t in tiers if t not in arlib.TIERS]
+    if unknown:
+        print(f"problem: unknown tier values {unknown}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

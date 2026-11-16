@@ -1,0 +1,213 @@
+#!/usr/bin/env python3
+"""Validate JSONL files of a review: record files against <dir>/schema.json (else the plugin's base record
+schema), the known auxiliary files against small built-in schemas.
+
+Auxiliary files, recognised by name (CONTRACT section 1): background_refs.jsonl (key, title, source_of_record),
+rigor_scores.jsonl (key, scores), claims_check*.jsonl and code/paper_code.jsonl (claim_id, paper_key,
+verdict, claim_text), code/code_records.jsonl (key, code), code/repo_audit.jsonl and comparison_class.jsonl
+(key), citation_candidates.jsonl (title); the code agents' own files (code_records_<ID>.jsonl and so on) like
+their joined file. Every other file
+(*_records.jsonl, merged, corpus, omissions...) is a record file; --schema validates every file against the
+given schema instead. Reports line numbers and field errors, duplicate keys, and a DOI or arXiv id that
+appears in two records (across all the files given). Exit 0 when clean, 1 on errors, 2 on bad usage.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+from collections import Counter
+
+import arlib
+
+
+def aux_schemas():
+    base = arlib.base_schema().get("properties") or {}
+    pick = {f: base[f] for f in ("key", "title", "year", "doi", "arxiv_id", "source_of_record") if f in base}
+    num = {"type": ["number", "string", "null"]}
+    return {
+        "background_refs.jsonl": (
+            {"type": "object", "required": ["key", "title", "source_of_record"], "properties": pick},
+            "key",
+            True,
+        ),
+        "rigor_scores.jsonl": (
+            {
+                "type": "object",
+                "required": ["key", "scores"],
+                "properties": {
+                    "key": pick.get("key", {}),
+                    "scores": {"type": "object"},
+                    "total": num,
+                    "max_possible": num,
+                },
+            },
+            "key",
+            False,
+        ),
+        "claims_check.jsonl": (
+            {
+                "type": "object",
+                "required": ["claim_id", "paper_key", "verdict", "claim_text"],
+                "properties": {
+                    "claim_id": {"type": ["string", "integer"]},
+                    "paper_key": {"type": ["string", "null"]},
+                    "verdict": {"type": "string", "minLength": 1},
+                    "claim_text": {"type": "string"},
+                },
+            },
+            "claim_id",
+            False,
+        ),
+        "code_records.jsonl": (
+            {
+                "type": "object",
+                "required": ["key", "code"],
+                "properties": {"key": pick.get("key", {}), "code": base.get("code", {})},
+            },
+            "key",
+            False,
+        ),
+        "repo_audit.jsonl": (
+            {"type": "object", "required": ["key"], "properties": {"key": {"type": "string"}}},
+            "key",
+            False,
+        ),
+        "paper_code.jsonl": (
+            {
+                "type": "object",
+                "required": ["claim_id", "paper_key", "verdict", "claim_text"],
+                "properties": {
+                    "claim_id": {"type": ["string", "integer"]},
+                    "verdict": {"type": "string", "minLength": 1},
+                },
+            },
+            "claim_id",
+            False,
+        ),
+        "comparison_class.jsonl": (
+            {"type": "object", "required": ["key"], "properties": {"key": {"type": "string"}}},
+            "key",
+            False,
+        ),
+        "citation_candidates.jsonl": (
+            {"type": "object", "required": ["title"], "properties": {"title": {"type": ["string", "null"]}}},
+            None,
+            False,
+        ),
+    }
+
+
+def kind_of(path, forced):
+    """(schema or None, label, key field or None, check DOI/arXiv duplicates)."""
+    name = path.name
+    if forced is not None:
+        return forced, "record", "key", True
+    if name.startswith("claims_check") and name.endswith(".jsonl"):  # claims_check_<id>.jsonl when sharded
+        name = "claims_check.jsonl"
+    for stem in ("code_records", "repo_audit", "paper_code"):  # <stem>_<id>.jsonl, one per code agent
+        if name.startswith(stem + "_") and name.endswith(".jsonl"):
+            name = stem + ".jsonl"
+    aux = aux_schemas().get(name)
+    if aux:
+        return aux[0], name[:-6], aux[1], aux[2]
+    return None, "record", "key", True
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-validate",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Relative file paths are read from the review folder (else the cwd).",
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("files", nargs="+", help="JSONL files to validate")
+    ap.add_argument("--schema", help="validate every file against this schema instead")
+    ap.add_argument("--quiet", action="store_true", help="print one line only")
+    ap.add_argument("--max", type=int, default=200, help="most error lines to print (default 200)")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    try:
+        schema, schema_path = arlib.load_schema(rdir, args.schema)
+    except (FileNotFoundError, ValueError) as e:
+        arlib.die(f"error: {e}", 2)
+    forced = schema if args.schema else None
+
+    errors = []  # (where, message)
+    bad_records = 0
+    n_records = 0
+    seen_keys = {}  # (key field, value) -> where
+    seen_ids = {}  # ('doi', x) -> (where, key)
+    by_field = Counter()
+    kinds = []
+    for f in args.files:
+        path = arlib.resolve(rdir, f)
+        name = arlib.rel(rdir, path)
+        if not path.exists():
+            arlib.die(f"error: file not found: {f}", 2)
+        fschema, kind, key_field, check_ids = kind_of(path, forced)
+        fschema = schema if fschema is None else fschema
+        kinds.append(f"{name} ({kind})")
+        for line, obj, err in arlib.iter_jsonl(path):
+            where = f"{name}:{line}"
+            if err:
+                errors.append((where, err))
+                by_field["(json)"] += 1
+                bad_records += 1
+                continue
+            n_records += 1
+            if not isinstance(obj, dict):
+                errors.append((where, "not a JSON object"))
+                by_field["(json)"] += 1
+                bad_records += 1
+                continue
+            key = obj.get(key_field) if key_field else None
+            label = f"{where} [{key}]" if key else where
+            errs = arlib.validate(obj, fschema)
+            for field, msg in errs:
+                errors.append((label, f"{field}: {msg}"))
+                by_field[field.split("[")[0]] += 1
+            if errs:
+                bad_records += 1
+            if key_field and isinstance(key, (str, int)) and key != "":
+                kk = ("key" if kind in ("record", "background_refs") else kind, key)
+                if kk in seen_keys:
+                    errors.append((label, f"duplicate {key_field} (first at {seen_keys[kk]})"))
+                    by_field[f"(duplicate {key_field})"] += 1
+                else:
+                    seen_keys[kk] = where
+            if check_ids:
+                for idkind, val in sorted(arlib.record_ids(obj)):
+                    first = seen_ids.get((idkind, val))
+                    if first is None:
+                        seen_ids[(idkind, val)] = (where, key)
+                    else:
+                        what = "DOI" if idkind == "doi" else "arXiv id"
+                        errors.append((label, f"{what} {val} also in {first[0]} [{first[1]}]"))
+                        by_field[f"(duplicate {what})"] += 1
+
+    files = len(args.files)
+    if args.quiet:
+        if errors:
+            w, m = errors[0]
+            print(f"ar-validate: {len(errors)} errors in {n_records} records ({files} files); first: {w}: {m}")
+        else:
+            print(f"ar-validate: OK ({n_records} records, {files} files)")
+        return 1 if errors else 0
+
+    print(f"schema: {arlib.rel(rdir, schema_path)} | files: " + ", ".join(kinds))
+    for w, m in errors[: args.max]:
+        print(f"{w}: {m}")
+    if len(errors) > args.max:
+        print(f"... {len(errors) - args.max} more")
+    if errors:
+        print("errors by field: " + ", ".join(f"{k} {v}" for k, v in by_field.most_common()))
+    print(f"{n_records} records in {files} files: {len(errors)} errors, {bad_records} records failing the schema")
+    return 1 if errors else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

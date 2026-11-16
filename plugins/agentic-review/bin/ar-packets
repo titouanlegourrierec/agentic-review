@@ -1,0 +1,160 @@
+#!/usr/bin/env python3
+"""Write one annotation packet per paper cited in 5-final/review.md -> 5-final/packets/<key>.md.
+
+A packet holds the paper's identifiers, tier and family after re-tiering, its domain fields (the fields
+schema.json adds to the base schema; review.json `packet_fields` overrides), the comparison agent's
+classification (3-analysis/comparison_class.jsonl, if any), every block of the review that cites it (with its
+section heading), the claims checked against it (4-checks/claims_check*.jsonl, and code/paper_code.jsonl when
+the code audit ran) and its rigor appraisal (4-checks/rigor_scores.jsonl). Papers come from the corpus, the omission
+additions and the background references (3-analysis/background_refs.jsonl): every cited work gets a packet, so
+every cited work can be annotated (background references as tier "background", light mode).
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import json
+import re
+
+import arlib
+
+MARKER = re.compile(r"<!--\s*section:\s*([A-Za-z0-9_.-]+)\s*-->")
+FALLBACK_FIELDS = ["task", "setting", "one_line_claim"]
+
+
+def blocks_of(text, review):
+    """[(heading, block)] for paragraphs, list items and table rows; a section marker resets the heading to
+    the review.json heading of that section."""
+    headings = {
+        str(s.get("id")): s.get("heading") or "" for s in (review.get("review_sections") or []) if isinstance(s, dict)
+    }
+    blocks, heading = [], ""
+    for line in text.splitlines():
+        m = MARKER.search(line)
+        if m:
+            heading = headings.get(m.group(1), heading)
+            continue
+        if line.startswith("#"):
+            heading = line.lstrip("#").strip()
+        elif line.strip():
+            blocks.append((heading, line.strip()))
+    return blocks
+
+
+def reference_headings(review):
+    out = {"references", "bibliography"}
+    for s in review.get("review_sections") or []:
+        h = str((s or {}).get("heading") or "")
+        if re.search(r"referen|bibliograph", h, re.I):
+            out.add(h.lower())
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-packets", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    missing = [p for p in (arlib.REVIEW_MD, arlib.CITEMAP, arlib.CORPUS) if not (rdir / p).exists()]
+    if missing:
+        print(f"missing {', '.join(missing)}")
+        return 1
+    try:
+        recs, background = {}, set()
+        for p in (arlib.CORPUS, arlib.OMISSIONS, arlib.BACKGROUND):
+            for r in arlib.load_jsonl(rdir / p, missing_ok=True):
+                if r.get("key") not in recs and p == arlib.BACKGROUND:
+                    background.add(r.get("key"))
+                recs.setdefault(r.get("key"), r)
+        claims = [c for p in sorted((rdir / "4-checks").glob("claims_check*.jsonl")) for c in arlib.load_jsonl(p)]
+        code_claims = arlib.load_jsonl(rdir / "4-checks" / "code" / "paper_code.jsonl", missing_ok=True)
+        rigor = {s.get("key"): s for s in arlib.load_jsonl(rdir / arlib.RIGOR, missing_ok=True)}
+        cls = {c.get("key"): c for c in arlib.load_jsonl(rdir / arlib.COMPARISON_CLASS, missing_ok=True)}
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    cmap = arlib.load_citemap(rdir)
+    retier = arlib.load_retiering(rdir)
+    schema, _ = arlib.load_schema(rdir)
+    fields = review.get("packet_fields") or arlib.domain_fields(schema) or FALLBACK_FIELDS
+    text = (rdir / arlib.REVIEW_MD).read_text(encoding="utf-8")
+    blocks = blocks_of(text, review)
+    refs = reference_headings(review)
+    out_dir = rdir / "5-final" / "packets"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    n, not_cited = 0, 0
+    for key, rec in recs.items():
+        row = cmap.get(key)
+        lab = row.get("label") if row else None
+        if not lab or f"[{lab}](" not in text:
+            not_cited += 1
+            continue
+        tier, fam = ("background", "") if key in background else arlib.retiered(rec, retier, review)
+        uses = [(h, b) for h, b in blocks if f"[{lab}](" in b and not h.lower().startswith(tuple(refs))]
+        lines = [
+            f"# Annotation packet — {key}",
+            "",
+            f"- Citation label in the review: {lab}",
+            f"- Title: {rec.get('title')}",
+            f"- DOI: {rec.get('doi')} | arXiv: {rec.get('arxiv_id')} | year: {arlib.cite_year(rec)}",
+            f"- Tier / family (after re-tiering): {tier} / {fam}",
+        ]
+        for f in fields:
+            if f in rec:
+                lines.append(f"- {f.replace('_', ' ')}: {rec.get(f)}")
+        lines.append("")
+        if key in cls:
+            lines += [
+                "## Comparison-agent classification",
+                "```",
+                json.dumps(cls[key], ensure_ascii=False, indent=1)[:2500],
+                "```",
+                "",
+            ]
+        lines += [
+            "## What the review says about this paper (each block quotes the review; the heading is its section)",
+            "",
+        ]
+        lines += [f"- [{h}] {b}" for h, b in uses]
+        cl = [c for c in claims if c.get("paper_key") == key]
+        if cl:
+            lines += ["", "## Checked claims (claims checker)", ""]
+            for c in cl:
+                lines += [
+                    f"- {c.get('claim_id')} [{c.get('verdict')}] {c.get('claim_text')}",
+                    f"  - evidence: {c.get('evidence')}",
+                    f"  - correct value: {c.get('correct_value')}",
+                ]
+        cc = [c for c in code_claims if c.get("paper_key") == key]
+        if cc:
+            lines += ["", "## Paper-versus-code checks (paper-code checker)", ""]
+            for c in cc:
+                lines += [
+                    f"- {c.get('claim_id')} [{c.get('verdict')}] {c.get('claim_text')}",
+                    f"  - explanation: {c.get('explanation')}",
+                    f"  - code: {c.get('code_permalink')}",
+                ]
+        if key in rigor:
+            s = rigor[key]
+            lines += [
+                "",
+                f"## Rigor appraisal: {s.get('total')}/{s.get('max_possible')}",
+                f"- scores: {s.get('scores')}",
+                f"- red flags: {s.get('red_flags')}",
+            ]
+            lines += [f"- {c}: {j}" for c, j in (s.get("justifications") or {}).items()]
+        arlib.atomic_write_text(out_dir / f"{key}.md", "\n".join(lines) + "\n")
+        n += 1
+    print(f"packets written: {n} -> {arlib.rel(rdir, out_dir)}/ (records not cited in the review: {not_cited})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

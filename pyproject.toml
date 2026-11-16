@@ -1,0 +1,50 @@
+[project]
+name = "agentic-review"
+version = "0.3.1"
+description = "A Claude Code plugin that runs a critical literature review with a team of AI agents."
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.9"
+# The plugin's scripts use the standard library only: this file exists for the development tools.
+dependencies = []
+
+[dependency-groups]
+dev = [
+    "ruff>=0.17.5",
+    "ty>=0.0.104",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+target-version = "py39"
+line-length = 120
+# The scripts in bin/ are Python files without an extension.
+extend-include = ["plugins/agentic-review/bin/ar-*"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "C4", "PIE", "RUF"]
+ignore = [
+  "E501",   # line length is the formatter's job; long strings and URLs stay whole
+  "RUF001", # typographic characters (×, –, ’) are intended in user-facing text
+  "RUF002",
+  "RUF003",
+  "SIM108", # a ternary is not always clearer than an if/else
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts put lib/ on sys.path before importing from it.
+"plugins/agentic-review/bin/*" = ["E402"]
+"plugins/agentic-review/tests/*" = ["E402"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["arlib", "edition", "ar_hook", "test_scripts"]
+
+[tool.ty.environment]
+python-version = "3.9"
+extra-paths = ["plugins/agentic-review/lib", "plugins/agentic-review/tests", "plugins/agentic-review/hooks"]
+
+[tool.ty.src]
+include = ["plugins/agentic-review/lib", "plugins/agentic-review/hooks", "plugins/agentic-review/tests",
+           "plugins/agentic-review/bin", "scripts"]

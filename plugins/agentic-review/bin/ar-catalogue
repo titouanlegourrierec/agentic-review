@@ -1,0 +1,221 @@
+#!/usr/bin/env python3
+"""Write 5-final/catalogue.md (every catalogued paper, by tier) and 5-final/rigor_table.md (rigor scores).
+
+Reads 2-merged/corpus.jsonl, 4-checks/omissions_checked.jsonl (rows marked †), 5-final/retiering.json,
+4-checks/rigor_scores.jsonl and 5-final/citation_map.tsv (labels and links). Optional review.json fields:
+`taxonomy` ({"F1": "name", ...} or [{"id", "name"}]) for the family legend, `rigor_rubric`
+([{"id", "name", "scoring"}]) for the rubric table, and `display_fields` (record fields shown as extra
+columns, default ["task"]). Rigor criteria are the keys of the records' `scores`.
+
+A "Code" column lists each paper's repository when at least one paper has one: the code audit's
+4-checks/code/code_records.jsonl first, else the record's own `code.url`, with the GitHub star count (★) and its
+date when the code finder recorded it. The script sends no request.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import re
+from collections import Counter
+from typing import Any
+
+import arlib
+
+
+def num(v):
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def repo_cell(code):
+    """'[owner/repo](url) ★ 42' for a code object, '' when it has no URL."""
+    url = (code or {}).get("url")
+    if not url or not re.match(r"^https?://", str(url)):
+        return ""
+    m = re.match(r"^https?://(?:www\.)?github\.com/([^/\s]+)/([^/\s#?]+)", url)
+    name = f"{m.group(1)}/{re.sub(r'[.]git$', '', m.group(2))}" if m else re.sub(r"^https?://(?:www\.)?", "", url)
+    cell = f"[{arlib.md_cell(name, 50)}]({url.replace(')', '%29').replace('|', '%7C')})"
+    stars = code.get("stars")
+    if isinstance(stars, int) and not isinstance(stars, bool):
+        cell += f" ★ {stars:,}"
+    return cell
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-catalogue", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    if not (rdir / arlib.CORPUS).exists():
+        print(f"missing {arlib.CORPUS}")
+        return 1
+    problems = []
+    try:
+        corpus = arlib.load_jsonl(rdir / arlib.CORPUS)
+        added = arlib.load_jsonl(rdir / arlib.OMISSIONS, missing_ok=True)
+        scores = arlib.load_jsonl(rdir / arlib.RIGOR, missing_ok=True)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    cmap = arlib.load_citemap(rdir)
+    if not cmap:
+        problems.append(f"{arlib.CITEMAP} missing: labels fall back to keys")
+    try:
+        audited = {
+            c.get("key"): (c.get("code") or {})
+            for c in arlib.load_jsonl(rdir / "4-checks" / "code" / "code_records.jsonl", missing_ok=True)
+        }
+    except ValueError as e:
+        audited = {}
+        problems.append(f"4-checks/code/code_records.jsonl: {e}")
+    retier = arlib.load_retiering(rdir)
+    fams = arlib.family_names(review)
+    extra = review.get("display_fields") or ["task"]
+    fam_rank = arlib.family_sort_key(review)
+    rows: list[dict[str, Any]] = []
+    for r, is_added in [(r, False) for r in corpus] + [(r, True) for r in added]:
+        k = r.get("key")
+        tier, fam = arlib.retiered(r, retier, review)
+        row = cmap.get(k)
+        if row is None and cmap:
+            problems.append(f"{k} not in the citation map")
+        label, url = (row["label"], row["url"]) if row else (k, arlib.record_url(r))
+        code = audited[k] if k in audited else (r.get("code") if isinstance(r.get("code"), dict) else {})
+        rows.append(
+            {
+                "tier": tier,
+                "codes": arlib.family_codes(fam),
+                "year": arlib.cite_year(r),
+                "label": label,
+                "url": url,
+                "title": r.get("title"),
+                "extra": [r.get(f) for f in extra],
+                "added": is_added,
+                "repo": repo_cell(code),
+                "stars_at": (code or {}).get("stars_at"),
+            }
+        )
+
+    counts = Counter(r["tier"] for r in rows)
+    out = [
+        "# Paper catalogue",
+        "",
+        f"All {len(rows)} catalogued papers: {len(corpus)} found by the discovery agents and {len(added)} added by "
+        f"the omission check (marked †). Tier and family after re-tiering ({len(retier)} papers re-tiered).",
+        "",
+    ]
+    if fams:
+        out += ["Families: " + " · ".join(f"{c} {n}" for c, n in fams.items()) + ".", ""]
+    with_code = sum(1 for r in rows if r["repo"])
+    if with_code:
+        dates = sorted({str(r["stars_at"])[:10] for r in rows if r["repo"] and "★" in r["repo"] and r["stars_at"]})
+        when = (f" on {dates[0]}" if len(dates) == 1 else f" between {dates[0]} and {dates[-1]}") if dates else ""
+        out += [
+            f"Code: {with_code} papers have a public repository"
+            + (
+                " (checked by the code audit)"
+                if audited
+                else " (as named in the paper; not yet checked by the code audit)"
+            )
+            + (f"; ★ = GitHub stars{when}" if any("★" in r["repo"] for r in rows) else "")
+            + ".",
+            "",
+        ]
+    head = ["Paper", "Year", "Title", "Family", *[f.replace("_", " ").capitalize() for f in extra]]
+    if with_code:
+        head.append("Code")
+    for tier in arlib.TIERS:
+        sel = sorted(
+            (r for r in rows if r["tier"] == tier),
+            key=lambda r: (fam_rank(r["codes"][0]), arlib.to_int(r["year"]), r["label"]),
+        )
+        out += [
+            f"## {arlib.TIER_TITLES[tier]} ({len(sel)})",
+            "",
+            "| " + " | ".join(head) + " |",
+            "| " + " | ".join("---" for _ in head) + " |",
+        ]
+        for r in sel:
+            paper = f"[{r['label']}]({r['url']})" + (" †" if r["added"] else "")
+            cells = [
+                paper,
+                arlib.md_cell(r["year"]),
+                arlib.md_cell(r["title"], 140),
+                ", ".join(r["codes"]),
+                *[arlib.md_cell(v, 40) for v in r["extra"]],
+            ]
+            if with_code:
+                cells.append(r["repo"] or "—")
+            out.append("| " + " | ".join(cells) + " |")
+        out.append("")
+    other = [r for r in rows if r["tier"] not in arlib.TIERS]
+    if other:
+        out.append(f"Unclassified: {len(other)} records ({', '.join(sorted({str(r['tier']) for r in other}))}).")
+        problems.append(f"{len(other)} records with a tier outside {arlib.TIERS}")
+    dest = rdir / "5-final" / "catalogue.md"
+    arlib.atomic_write_text(dest, "\n".join(out).rstrip() + "\n")
+
+    rubric = [x for x in (review.get("rigor_rubric") or []) if isinstance(x, dict) and x.get("id")]
+    crit = [x["id"] for x in rubric]
+    for s in scores:
+        for c in s.get("scores") or {}:
+            if c not in crit:
+                crit.append(c)
+    if not rubric:
+        crit.sort(key=arlib.natural_key)
+
+    def ratio(s):
+        t, m = num(s.get("total")), num(s.get("max_possible"))
+        return (t / m) if t is not None and m else -1.0
+
+    for s in scores:
+        if s.get("total") is None:
+            vals = [num(v) for v in (s.get("scores") or {}).values() if num(v) is not None]
+            s["total"] = int(sum(vals)) if vals else None
+    scores.sort(key=lambda s: (-ratio(s), -(num(s.get("total")) or 0)))  # stable: ties keep file order
+    rt = [
+        "# Rigor scores",
+        "",
+        f"{len(scores)} papers scored by an independent agent on {len(crit)} criteria. "
+        '"–" = not assessable from the accessible text; totals are out of the criteria that could be scored.',
+        "",
+    ]
+    if rubric:
+        rt += ["| Code | Criterion | Scoring |", "| --- | --- | --- |"]
+        rt += [f"| {x['id']} | {arlib.md_cell(x.get('name'))} | {arlib.md_cell(x.get('scoring'))} |" for x in rubric]
+        rt.append("")
+    head = ["Paper", "Read", *crit, "Total"]
+    rt += ["| " + " | ".join(head) + " |", "| " + " | ".join("---" for _ in head) + " |"]
+    for s in scores:
+        row = cmap.get(s.get("key"))
+        label, url = (row["label"], row["url"]) if row else (s.get("key"), "")
+        sc = s.get("scores") or {}
+        vals = ["–" if sc.get(c) is None else str(sc[c]) for c in crit]
+        depth = "full text" if s.get("evidence_depth") == "full-text" else (s.get("evidence_depth") or "")
+        total = (
+            f"{s.get('total')}/{s.get('max_possible')}" if s.get("max_possible") is not None else str(s.get("total"))
+        )
+        paper = f"[{label}]({url})" if url else str(label)
+        rt.append(f"| {paper} | {depth} | " + " | ".join(vals) + f" | {total} |")
+    dest2 = rdir / "5-final" / "rigor_table.md"
+    arlib.atomic_write_text(dest2, "\n".join(rt) + "\n")
+    print(
+        f"catalogue rows={len(rows)} {dict(counts)} retiered={len(retier)} | rigor rows={len(scores)} "
+        f"criteria={len(crit)}"
+    )
+    print(f"wrote {arlib.rel(rdir, dest)}, {arlib.rel(rdir, dest2)}")
+    for p in problems[:20]:
+        print(f"problem: {p}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

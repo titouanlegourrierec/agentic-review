@@ -1,0 +1,195 @@
+#!/usr/bin/env python3
+"""Gather the code audit's files and write 4-checks/code/code_report.md (Phase 3b).
+
+Each code agent writes its own file, so that agents of one role can run in parallel:
+  code_records_<ID>.jsonl  (code-finder: key, code {url, seen_at, commit, checked, license, weights, framework},
+                            evidence_url, notes)
+  repo_audit_<ID>.jsonl    (repo-auditor: key, repo, commit, items {name: {score, justification}}, total, ...)
+  paper_code_<ID>.jsonl    (paper-code-checker: claim_id, paper_key, claim_text, verdict, code_permalink, ...)
+This script joins each kind into code_records.jsonl, repo_audit.jsonl and paper_code.jsonl (the files later steps
+read; an existing joined file is kept when no per-agent file exists), and writes code_report.md: papers with code,
+with weights, with a licence, code promised but absent, the reproducibility audit (mean total, most common gaps)
+and the paper-versus-code verdicts with every `differs` listed. Exit 1 when a file does not parse.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import re
+from collections import Counter
+
+import arlib
+
+KINDS = [("code_records", "key"), ("repo_audit", "key"), ("paper_code", "claim_id")]
+PUBLISHED = {"yes", "true", "published", "released", "available", "public"}
+PROMISED = {"promised", "coming soon", "soon", "planned"}
+
+
+def gather(code_dir, stem, id_field):
+    """Join <stem>_<ID>.jsonl files into <stem>.jsonl. Returns (rows, notes)."""
+    parts = sorted(p for p in code_dir.glob(f"{stem}_*.jsonl"))
+    joined = code_dir / f"{stem}.jsonl"
+    if not parts:
+        return arlib.load_jsonl(joined, missing_ok=True), []
+    rows, where, notes = [], {}, []
+    for p in parts:
+        agent = p.stem[len(stem) + 1 :]
+        for r in arlib.load_jsonl(p):
+            if not isinstance(r, dict):
+                continue
+            ident = r.get(id_field)
+            if id_field == "claim_id" and ident is not None and ident in where and where[ident][0] != agent:
+                r = dict(r, claim_id=f"{agent}-{ident}")  # two agents numbered their claims alike
+                ident = r["claim_id"]
+            if ident is not None and ident in where:
+                notes.append(f"{stem}: {id_field} {ident} in {where[ident][0]} and {agent}; kept {agent}'s")
+                rows[where[ident][1]] = r
+                continue
+            where[ident] = (agent, len(rows))
+            rows.append(r)
+    arlib.save_jsonl(joined, rows)
+    notes.insert(0, f"{stem}.jsonl: {len(rows)} rows from {', '.join(p.name for p in parts)}")
+    return rows, notes
+
+
+def norm(v):
+    return str(v).strip().lower() if v is not None else ""
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-code", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    code_dir = rdir / "4-checks" / "code"
+    if not code_dir.is_dir():
+        print("no 4-checks/code/ folder: the code audit has not run")
+        return 1
+    try:
+        found, notes = {}, []
+        for stem, id_field in KINDS:
+            found[stem], n = gather(code_dir, stem, id_field)
+            notes += n
+        papers = {
+            r.get("key"): r
+            for p in (arlib.CORPUS, arlib.OMISSIONS)
+            for r in arlib.load_jsonl(rdir / p, missing_ok=True)
+        }
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+
+    recs = {r.get("key"): r for r in found["code_records"]}
+    codes = {k: (r.get("code") or {}) for k, r in recs.items()}
+    with_url = [k for k, c in codes.items() if c.get("url")]
+    weights = Counter(norm(c.get("weights")) or "unknown" for k, c in codes.items() if c.get("url"))
+    published = [k for k, c in codes.items() if c.get("url") and norm(c.get("weights")) in PUBLISHED]
+    promised = [
+        k
+        for k, c in codes.items()
+        if norm(c.get("weights")) in PROMISED
+        or re.search(r"promised|coming soon|empty repo", norm(recs[k].get("notes")))
+    ]
+    licensed = [
+        k
+        for k, c in codes.items()
+        if c.get("url") and c.get("license") and norm(c.get("license")) not in ("none", "no", "null", "noassertion")
+    ]
+    pinned = [k for k, c in codes.items() if c.get("url") and re.fullmatch(r"[0-9a-f]{7,40}", norm(c.get("commit")))]
+    unchecked = sorted(k for k in papers if k not in recs)
+    tiers = Counter(arlib.map_tier(papers[k].get("tier"), arlib.load_review(rdir)) for k in with_url if k in papers)
+
+    audit = found["repo_audit"]
+    totals = [arlib.to_int(a.get("total"), None) for a in audit]
+    totals = [t for t in totals if t is not None]
+    gaps = Counter()
+    for a in audit:
+        for item, v in (a.get("items") or {}).items():
+            score = v.get("score") if isinstance(v, dict) else v
+            if arlib.to_int(score, None) == 0:
+                gaps[item] += 1
+
+    claims = found["paper_code"]
+    verdicts = Counter(norm(c.get("verdict")) or "?" for c in claims)
+    differs = [c for c in claims if norm(c.get("verdict")) == "differs"]
+
+    def pct(a, b):
+        return f"{a} of {b} ({100 * a / b:.0f}%)" if b else f"{a} of 0"
+
+    n = len(recs)
+    rep = [
+        "# Code audit report",
+        "",
+        f"Generated {arlib.now_iso()} by ar-code from the files in 4-checks/code/.",
+        "",
+        "## Repositories (code finder)",
+        "",
+        f"- Papers checked: {n} ({len(unchecked)} papers of the corpus and omissions not checked)",
+        f"- With a repository: {pct(len(with_url), n)}"
+        + (f" — by tier: {', '.join(f'{t} {c}' for t, c in tiers.most_common())}" if tiers else ""),
+        f"- Repositories with a pinned commit: {pct(len(pinned), len(with_url))}",
+        f"- With trained weights published: {pct(len(published), len(with_url))}",
+        f"- With a licence: {pct(len(licensed), len(with_url))}",
+        f"- Code promised but absent or empty: {len(promised)}"
+        + (f" ({', '.join(sorted(promised))})" if promised else ""),
+        f"- Weights field values: {', '.join(f'{k} {v}' for k, v in weights.most_common()) or '—'}",
+        "",
+        "## Reproducibility audit (repo auditor)",
+        "",
+    ]
+    if audit:
+        rep += [
+            f"- Repositories audited: {len(audit)}",
+            f"- Mean total: {sum(totals) / len(totals):.1f}" if totals else "- Mean total: —",
+            "- Most common gaps (items scored 0): "
+            + (", ".join(f"{k} ({v})" for k, v in gaps.most_common()) or "none"),
+            "",
+            "| Paper | Total | Repository |",
+            "|---|---|---|",
+            *[
+                f"| {arlib.md_cell(a.get('key'))} | {arlib.md_cell(a.get('total'))} | {arlib.md_cell(a.get('repo'))} |"
+                for a in sorted(audit, key=lambda a: str(a.get("key")))
+            ],
+            "",
+        ]
+    else:
+        rep += ["Not run.", ""]
+    rep += ["## Paper versus code (paper-code checker)", ""]
+    if claims:
+        rep += [f"- Claims checked: {len(claims)} — " + ", ".join(f"{k} {v}" for k, v in verdicts.most_common()), ""]
+        if differs:
+            rep += [
+                "### Differences",
+                "",
+                "| Claim | Paper | Claim text | Code | Explanation |",
+                "|---|---|---|---|---|",
+                *[
+                    f"| {arlib.md_cell(c.get('claim_id'))} | {arlib.md_cell(c.get('paper_key'))} | "
+                    f"{arlib.md_cell(c.get('claim_text'), 160)} | {arlib.md_cell(c.get('code_permalink'))} | "
+                    f"{arlib.md_cell(c.get('explanation'), 200)} |"
+                    for c in differs
+                ],
+                "",
+            ]
+    else:
+        rep += ["Not run.", ""]
+    if notes:
+        rep += ["## Files", "", *[f"- {x}" for x in notes], ""]
+    if unchecked:
+        rep += ["## Not checked by the code finder", "", ", ".join(unchecked), ""]
+    arlib.atomic_write_text(code_dir / "code_report.md", "\n".join(rep))
+    print(
+        f"papers_checked={n} with_repo={len(with_url)} weights_published={len(published)} licensed={len(licensed)} "
+        f"promised={len(promised)} audited={len(audit)} claims={len(claims)} verdicts={dict(verdicts)}"
+    )
+    print(f"wrote {arlib.rel(rdir, code_dir / 'code_report.md')}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

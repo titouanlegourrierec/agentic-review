@@ -1,0 +1,66 @@
+#!/usr/bin/env python3
+"""Write 2-merged/chase_leftovers.jsonl: the citation-chase candidates that are not in the corpus yet.
+
+Reads 1-discovery/citation_candidates.jsonl and 2-merged/corpus.jsonl. A candidate is already in the corpus when
+its DOI or arXiv id matches a corpus record, or its normalised title equals one. The omissions checker triages the
+leftovers in Phase 3. Exit 1 when an input is missing or unreadable.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+
+import arlib
+
+CANDIDATES = "1-discovery/citation_candidates.jsonl"
+CORPUS = "2-merged/corpus.jsonl"
+OUT = "2-merged/chase_leftovers.jsonl"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-leftovers", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    try:
+        candidates = arlib.load_jsonl(rdir / CANDIDATES)
+        corpus = arlib.load_jsonl(rdir / CORPUS)
+    except (OSError, ValueError) as e:
+        print(f"error: {e}")
+        return 1
+
+    ids, titles = set(), set()
+    for r in corpus:
+        ids |= arlib.record_ids(r)
+        t = arlib.norm_text(r.get("title"))
+        if t:
+            titles.add(t)
+
+    leftovers, seen = [], set()
+    for c in candidates:
+        cid = arlib.record_ids(c)
+        title = arlib.norm_text(c.get("title") or c.get("display_name"))
+        if cid & ids or (title and title in titles):
+            continue
+        dedup = tuple(sorted(cid)) or (title,)
+        if dedup in seen:
+            continue
+        seen.add(dedup)
+        leftovers.append(c)
+
+    arlib.save_jsonl(rdir / OUT, leftovers)
+    print(
+        f"candidates={len(candidates)} dropped (in corpus or repeated)={len(candidates) - len(leftovers)} "
+        f"leftovers={len(leftovers)}"
+    )
+    print(f"wrote {OUT}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

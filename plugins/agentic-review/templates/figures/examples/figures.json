@@ -1,0 +1,1472 @@
+{
+ "figures": [
+  {
+   "id": "controlled-comparisons",
+   "type": "dots",
+   "title": "What adding learned k-space processing changes",
+   "caption": "PSNR change in every verified controlled comparison ([Verified controlled comparisons](#Verified controlled comparisons)). Filled points are the seven comparisons, from five papers, that set a learned k-space component against image-only learning on raw-derived k-space with measured data enforced in both arms, at matched capacity or with a capacity gap that favours the k-space arm; their range, −1.2 to +0.7 dB, is shaded. Reference rows replace the image blocks (diamond) or carry no learned k-space operator. Hollow points sit at the edge of the definition, each for the reason given at right. Rows marked SSIM only have no PSNR value, and no study reports variance over training runs.",
+   "place": {
+    "section": "Verified controlled comparisons",
+    "after": "The first seven rows, from five papers"
+   },
+   "source": {
+    "section": "Verified controlled comparisons"
+   },
+   "mention": "Figure {n} plots every row on one axis.",
+   "axis": {
+    "min": -3.3,
+    "max": 2.7,
+    "ticks": [
+     -3,
+     -2,
+     -1,
+     0,
+     1,
+     2
+    ],
+    "signed": true,
+    "unit": "dB",
+    "label": "Change in PSNR when learned k-space processing is added (dB)",
+    "left": "← image-only better",
+    "right": "k-space helps →"
+   },
+   "series": [
+    {
+     "id": "core",
+     "label": "core comparison",
+     "marker": "filled",
+     "colour": 1
+    },
+    {
+     "id": "edge",
+     "label": "edge case",
+     "marker": "hollow",
+     "colour": 1
+    },
+    {
+     "id": "replace",
+     "label": "reference row: replaces the image blocks",
+     "marker": "diamond",
+     "colour": "muted"
+    }
+   ],
+   "groups": [
+    {
+     "id": "core",
+     "label": "Core: seven comparisons in five papers"
+    },
+    {
+     "id": "ref",
+     "label": "Reference rows"
+    },
+    {
+     "id": "edge",
+     "label": "Edge cases: each one moves the bound"
+    }
+   ],
+   "band": {
+    "from": -1.2,
+    "to": 0.7,
+    "label": "−1.2 to +0.7 dB",
+    "group": "core",
+    "legend": "core range, raw-derived static data"
+   },
+   "rows": [
+    {
+     "key": "souza2020dual",
+     "label": "Souza et al., 2020",
+     "sub": "Image-first hybrid vs image-only W-net, all channels",
+     "group": "core",
+     "text": "+0.7 / +0.6 dB at R = 4 / 8",
+     "values": {
+      "core": [
+       0.7,
+       0.6
+      ]
+     }
+    },
+    {
+     "key": "souza2020dual",
+     "label": "Souza et al., 2020",
+     "sub": "Image-first and k-first hybrids, channel by channel",
+     "group": "core",
+     "text": "−0.7 to −1.2 dB",
+     "values": {
+      "core": [
+       -0.7,
+       -1.2,
+       -0.7,
+       -0.8
+      ]
+     }
+    },
+    {
+     "key": "souza2019hybrid",
+     "label": "Souza et al., 2019",
+     "sub": "Hybrid cascade vs Deep-Cascade",
+     "group": "core",
+     "text": "+0.36 / +0.21 dB at 4x / 5x",
+     "values": {
+      "core": [
+       0.36,
+       0.21
+      ]
+     }
+    },
+    {
+     "key": "liu2022dualdomain",
+     "label": "Liu et al., 2022b",
+     "sub": "KV-Net vs cascaded image V-Nets",
+     "group": "core",
+     "text": "+0.02 dB",
+     "values": {
+      "core": [
+       0.02
+      ]
+     }
+    },
+    {
+     "key": "ramzi2020benchmarking",
+     "label": "Ramzi et al., 2020a",
+     "sub": "Learned dual (PD-net) vs image cascade, hard DC",
+     "group": "core",
+     "text": "+0.18 / +0.22 dB",
+     "values": {
+      "core": [
+       0.18,
+       0.22
+      ]
+     }
+    },
+    {
+     "key": "ramzi2020benchmarking",
+     "label": "Ramzi et al., 2020a",
+     "sub": "KIKI-net vs image cascade, hard DC",
+     "group": "core",
+     "text": "−0.59 dB",
+     "note": "k-space arm 3x larger, still loses",
+     "values": {
+      "core": [
+       -0.59
+      ]
+     }
+    },
+    {
+     "key": "singh2022joint",
+     "label": "Singh et al., 2022",
+     "sub": "Joint layers vs image convolutions inside MoDL",
+     "group": "core",
+     "text": "SSIM only: similar final SSIM",
+     "note": "4 h vs 31 h; capacity not stated"
+    },
+    {
+     "key": "souza2020dual",
+     "label": "Souza et al., 2020",
+     "sub": "k-space-only cascade in place of the image blocks",
+     "group": "ref",
+     "text": "−2.9 / −2.1 dB",
+     "note": "replacement, not addition",
+     "values": {
+      "replace": [
+       -2.9,
+       -2.1
+      ]
+     }
+    },
+    {
+     "key": "sriram2020end",
+     "label": "Sriram et al., 2020a",
+     "sub": "k-space state vs image state",
+     "group": "ref",
+     "text": "SSIM only: +0.001 to +0.003",
+     "note": "no learned k-space operator"
+    },
+    {
+     "key": "sriram2020grappanet",
+     "label": "Sriram et al., 2020b",
+     "sub": "GrappaNet vs image U-Net",
+     "group": "edge",
+     "text": "+0.50 to +1.16 dB",
+     "note": "adds a classical GRAPPA layer",
+     "values": {
+      "edge": [
+       1.16,
+       0.8,
+       0.5,
+       0.68
+      ]
+     }
+    },
+    {
+     "key": "wang2019dimension",
+     "label": "Wang et al., 2022b",
+     "sub": "k-space block in a cine cascade",
+     "group": "edge",
+     "text": "+2.42 dB",
+     "note": "dynamic, coil-combined cine",
+     "values": {
+      "edge": [
+       2.42
+      ]
+     }
+    },
+    {
+     "key": "ramzi2020benchmarking",
+     "label": "Ramzi et al., 2020a",
+     "sub": "Learned dual vs image cascade on OASIS",
+     "group": "edge",
+     "text": "+1.22 dB",
+     "note": "k-space simulated from magnitude",
+     "values": {
+      "edge": [
+       1.22
+      ]
+     }
+    },
+    {
+     "key": "eo2018kiki",
+     "label": "Eo et al., 2018a",
+     "sub": "KIKI-net vs image cascade of equal capacity, ADNI",
+     "group": "edge",
+     "text": "+1.92 dB",
+     "note": "k-space simulated from magnitude; stage-wise",
+     "values": {
+      "edge": [
+       1.92
+      ]
+     }
+    },
+    {
+     "key": "liu2024image",
+     "label": "Liu et al., 2024c",
+     "sub": "Spectral operator inside E2E-VarNet",
+     "group": "edge",
+     "text": "+0.30 dB",
+     "note": "feature-level, not measured k-space",
+     "values": {
+      "edge": [
+       0.3
+      ]
+     }
+    },
+    {
+     "key": "ilicak2026physics",
+     "label": "Ilıcak et al., 2026",
+     "sub": "Dual vs image-only branch",
+     "group": "edge",
+     "text": "+0.07 dB",
+     "note": "emulated low field; dual arm larger",
+     "values": {
+      "edge": [
+       0.07
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "coupling-patterns",
+   "type": "diagram",
+   "file": "taxonomy.svg",
+   "title": "Seven ways to couple k-space and image learning, and the baseline they must beat",
+   "caption": "Blue blocks learn in k-space and orange blocks in image space; DC enforces the measured samples and F⁻¹ is the inverse Fourier transform. The baseline is an image network with DC. Counts are papers per family (joint unless stated). Each panel links to its section.",
+   "place": {
+    "section": "Taxonomy",
+    "after": "paragraph"
+   }
+  },
+  {
+   "id": "families-by-year",
+   "type": "heatmap",
+   "title": "Joint papers by family and year",
+   "caption": "156 papers, each under its first-listed family; * 2026 runs to 4 November. The field grew after 2020, most in parallel branches and interleaved operators; sequential cascades remain the largest family.",
+   "place": {
+    "section": "Key approaches",
+    "after": "paragraph"
+   },
+   "columns": [
+    {
+     "id": "2018",
+     "label": "2018"
+    },
+    {
+     "id": "2019",
+     "label": "2019"
+    },
+    {
+     "id": "2020",
+     "label": "2020"
+    },
+    {
+     "id": "2021",
+     "label": "2021"
+    },
+    {
+     "id": "2022",
+     "label": "2022"
+    },
+    {
+     "id": "2023",
+     "label": "2023"
+    },
+    {
+     "id": "2024",
+     "label": "2024"
+    },
+    {
+     "id": "2025",
+     "label": "2025"
+    },
+    {
+     "id": "2026",
+     "label": "2026*"
+    }
+   ],
+   "rows": [
+    {
+     "label": "F1 Domain transform",
+     "values": {
+      "2018": 0,
+      "2019": 0,
+      "2020": 1,
+      "2021": 0,
+      "2022": 0,
+      "2023": 0,
+      "2024": 1,
+      "2025": 2,
+      "2026": 0
+     },
+     "total": 4
+    },
+    {
+     "label": "F2 k-space interpolation",
+     "values": {
+      "2018": 0,
+      "2019": 0,
+      "2020": 0,
+      "2021": 0,
+      "2022": 1,
+      "2023": 0,
+      "2024": 0,
+      "2025": 1,
+      "2026": 0
+     },
+     "total": 2
+    },
+    {
+     "label": "F3 Sequential cascades",
+     "values": {
+      "2018": 1,
+      "2019": 2,
+      "2020": 5,
+      "2021": 3,
+      "2022": 4,
+      "2023": 5,
+      "2024": 6,
+      "2025": 3,
+      "2026": 4
+     },
+     "total": 33
+    },
+    {
+     "label": "F4 Parallel branches",
+     "values": {
+      "2018": 0,
+      "2019": 1,
+      "2020": 2,
+      "2021": 4,
+      "2022": 2,
+      "2023": 0,
+      "2024": 6,
+      "2025": 6,
+      "2026": 6
+     },
+     "total": 27
+    },
+    {
+     "label": "F5 Interleaved operators",
+     "values": {
+      "2018": 0,
+      "2019": 0,
+      "2020": 0,
+      "2021": 0,
+      "2022": 3,
+      "2023": 5,
+      "2024": 3,
+      "2025": 3,
+      "2026": 3
+     },
+     "total": 17
+    },
+    {
+     "label": "F6 Unrolled, learned k-space step",
+     "values": {
+      "2018": 0,
+      "2019": 1,
+      "2020": 2,
+      "2021": 0,
+      "2022": 2,
+      "2023": 4,
+      "2024": 6,
+      "2025": 4,
+      "2026": 0
+     },
+     "total": 19
+    },
+    {
+     "label": "F7 Objective coupling",
+     "values": {
+      "2018": 0,
+      "2019": 1,
+      "2020": 0,
+      "2021": 0,
+      "2022": 1,
+      "2023": 2,
+      "2024": 1,
+      "2025": 2,
+      "2026": 0
+     },
+     "total": 7
+    },
+    {
+     "label": "F8 Self-supervision",
+     "values": {
+      "2018": 0,
+      "2019": 0,
+      "2020": 0,
+      "2021": 0,
+      "2022": 2,
+      "2023": 2,
+      "2024": 4,
+      "2025": 0,
+      "2026": 4
+     },
+     "total": 12
+    },
+    {
+     "label": "F9 Generative",
+     "values": {
+      "2018": 3,
+      "2019": 1,
+      "2020": 1,
+      "2021": 0,
+      "2022": 2,
+      "2023": 3,
+      "2024": 3,
+      "2025": 5,
+      "2026": 2
+     },
+     "total": 20
+    },
+    {
+     "label": "F10 Beyond reconstruction",
+     "values": {
+      "2018": 0,
+      "2019": 1,
+      "2020": 2,
+      "2021": 1,
+      "2022": 3,
+      "2023": 3,
+      "2024": 2,
+      "2025": 2,
+      "2026": 1
+     },
+     "total": 15
+    }
+   ],
+   "scale": {
+    "counts": true
+   },
+   "column_totals": true,
+   "total_label": "Papers"
+  },
+  {
+   "id": "rigour-markers",
+   "type": "bars",
+   "title": "Rigour markers in the 76 classified corpus joint papers",
+   "caption": "Blue bars count strengths; the hatched bar counts a weakness. Only 2 papers combine raw multi-coil data, an E2E-VarNet-class baseline and a capacity-controlled k-space ablation, and the controlled ablation has stayed at three or four papers per period.",
+   "place": {
+    "section": "Corpus-level statistics",
+    "after": "Rigour markers are rare"
+   },
+   "mention": "Figure {n} shows how often each marker appears.",
+   "axis": {
+    "label": "share of the 76 classified corpus joint papers"
+   },
+   "rows": [
+    {
+     "label": "Releases code",
+     "value": 35,
+     "of": 76
+    },
+    {
+     "label": "Raw multi-coil data in any experiment",
+     "value": 32,
+     "of": 76
+    },
+    {
+     "label": "States its own parameter count",
+     "value": 28,
+     "of": 76
+    },
+    {
+     "label": "E2E-VarNet-class baseline",
+     "value": 11,
+     "of": 76
+    },
+    {
+     "label": "Capacity-controlled k-space ablation",
+     "value": 10,
+     "of": 76
+    },
+    {
+     "label": "All three: raw data, strong baseline, controlled ablation",
+     "value": 2,
+     "of": 76
+    },
+    {
+     "label": "k-space computed from magnitude images (a weakness)",
+     "value": 34,
+     "of": 76,
+     "style": "weak"
+    }
+   ]
+  },
+  {
+   "id": "rigor-scores",
+   "type": "heatmap",
+   "title": "Rigor scores of the 25 appraised papers",
+   "caption": "Nine criteria scored 0–2 (defined in [Appendix B](#appendix-b)), ordered by total; all were scored from their full texts. Statistics and reproducibility are weakest, and test-set independence is near ceiling. Each row opens the passage behind its red flag.",
+   "place": {
+    "section": "Methodological rigor",
+    "after": "The 25 appraised joint papers"
+   },
+   "mention": "Figure {n} shows every score.",
+   "columns": [
+    {
+     "id": "R1",
+     "label": "Data"
+    },
+    {
+     "id": "R2",
+     "label": "Sampling"
+    },
+    {
+     "id": "R3",
+     "label": "Baseline"
+    },
+    {
+     "id": "R4",
+     "label": "k-space ablation"
+    },
+    {
+     "id": "R5",
+     "label": "Capacity"
+    },
+    {
+     "id": "R6",
+     "label": "Test split"
+    },
+    {
+     "id": "R7",
+     "label": "Statistics"
+    },
+    {
+     "id": "R8",
+     "label": "Breadth"
+    },
+    {
+     "id": "R9",
+     "label": "Code and weights"
+    }
+   ],
+   "rows": [
+    {
+     "key": "xu2025attention",
+     "label": "Xu et al., 2025a",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 1,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 1
+     },
+     "total": 15,
+     "of": 18
+    },
+    {
+     "key": "klug2024motionttt",
+     "label": "Klug et al., 2024",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 0,
+      "R4": 2,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 1
+     },
+     "total": 14,
+     "of": 18
+    },
+    {
+     "key": "pramanik2020deep",
+     "label": "Pramanik et al., 2020",
+     "values": {
+      "R1": 2,
+      "R2": 1,
+      "R3": 2,
+      "R4": 1,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 2
+     },
+     "total": 14,
+     "of": 18
+    },
+    {
+     "key": "singhjatyani2025unified",
+     "label": "Singh Jatyani et al., 2025",
+     "values": {
+      "R1": 2,
+      "R2": 1,
+      "R3": 2,
+      "R4": 1,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 2
+     },
+     "total": 14,
+     "of": 18
+    },
+    {
+     "key": "singh2022joint",
+     "label": "Singh et al., 2022",
+     "values": {
+      "R1": 1,
+      "R2": 2,
+      "R3": 2,
+      "R4": 2,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 2
+     },
+     "total": 14,
+     "of": 18
+    },
+    {
+     "key": "souza2020dual",
+     "label": "Souza et al., 2020",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 1,
+      "R4": 2,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 14,
+     "of": 18
+    },
+    {
+     "key": "liu2024image",
+     "label": "Liu et al., 2024c",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 2,
+      "R5": 2,
+      "R6": 2,
+      "R7": 0,
+      "R8": 1,
+      "R9": 0
+     },
+     "total": 13,
+     "of": 18
+    },
+    {
+     "key": "zhang2026revisible",
+     "label": "Zhang et al., 2026c",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 2,
+      "R5": 0,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 0
+     },
+     "total": 13,
+     "of": 18
+    },
+    {
+     "key": "zhou2022dual",
+     "label": "Zhou et al., 2022",
+     "values": {
+      "R1": 0,
+      "R2": 2,
+      "R3": 2,
+      "R4": 2,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 0
+     },
+     "total": 13,
+     "of": 18
+    },
+    {
+     "key": "zimmermann2024nosense",
+     "label": "Zimmermann and Kofler, 2024",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 1,
+      "R5": 1,
+      "R6": 2,
+      "R7": 0,
+      "R8": 2,
+      "R9": 1
+     },
+     "total": 13,
+     "of": 18
+    },
+    {
+     "key": "meng2026dh",
+     "label": "Meng et al., 2026",
+     "values": {
+      "R1": 1,
+      "R2": 2,
+      "R3": 1,
+      "R4": 1,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 12,
+     "of": 18
+    },
+    {
+     "key": "ran2020mdrecon",
+     "label": "Ran et al., 2021",
+     "values": {
+      "R1": 1,
+      "R2": 1,
+      "R3": 1,
+      "R4": 1,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 1
+     },
+     "total": 12,
+     "of": 18
+    },
+    {
+     "key": "xing2026multi",
+     "label": "Xing et al., 2026",
+     "values": {
+      "R1": 2,
+      "R2": 1,
+      "R3": 2,
+      "R4": 1,
+      "R5": 2,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 0
+     },
+     "total": 12,
+     "of": 18
+    },
+    {
+     "key": "zhang2025camp",
+     "label": "Zhang et al., 2025a",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 1,
+      "R5": 0,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 0
+     },
+     "total": 12,
+     "of": 18
+    },
+    {
+     "key": "liu2019mantis",
+     "label": "Liu et al., 2019",
+     "values": {
+      "R1": 0,
+      "R2": 2,
+      "R3": 1,
+      "R4": 2,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 2,
+      "R9": 0
+     },
+     "total": 11,
+     "of": 18
+    },
+    {
+     "key": "sriram2020grappanet",
+     "label": "Sriram et al., 2020b",
+     "values": {
+      "R1": 2,
+      "R2": 2,
+      "R3": 2,
+      "R4": 1,
+      "R5": 1,
+      "R6": 2,
+      "R7": 0,
+      "R8": 1,
+      "R9": 0
+     },
+     "total": 11,
+     "of": 18
+    },
+    {
+     "key": "zhang2026dualdomain",
+     "label": "Zhang et al., 2026a",
+     "values": {
+      "R1": 2,
+      "R2": 0,
+      "R3": 1,
+      "R4": 2,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 11,
+     "of": 18
+    },
+    {
+     "key": "souza2019hybrid",
+     "label": "Souza et al., 2019",
+     "values": {
+      "R1": 1,
+      "R2": 1,
+      "R3": 1,
+      "R4": 1,
+      "R5": 1,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 10,
+     "of": 18
+    },
+    {
+     "key": "eo2018kiki",
+     "label": "Eo et al., 2018a",
+     "values": {
+      "R1": 1,
+      "R2": 1,
+      "R3": 1,
+      "R4": 2,
+      "R5": 1,
+      "R6": 1,
+      "R7": 0,
+      "R8": 1,
+      "R9": 0
+     },
+     "total": 9,
+     "of": 18
+    },
+    {
+     "key": "liu2022dualdomain",
+     "label": "Liu et al., 2022b",
+     "values": {
+      "R1": 1,
+      "R2": 2,
+      "R3": 1,
+      "R4": 2,
+      "R5": 1,
+      "R6": 2,
+      "R7": 0,
+      "R8": 0,
+      "R9": 0
+     },
+     "total": 9,
+     "of": 18
+    },
+    {
+     "key": "zhang2025mdpg",
+     "label": "Zhang et al., 2025b",
+     "values": {
+      "R1": 1,
+      "R2": 2,
+      "R3": 1,
+      "R4": 1,
+      "R5": 0,
+      "R6": 2,
+      "R7": 0,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 9,
+     "of": 18
+    },
+    {
+     "key": "quan2018compressed",
+     "label": "Quan et al., 2018",
+     "values": {
+      "R1": 0,
+      "R2": 0,
+      "R3": 1,
+      "R4": 2,
+      "R5": 1,
+      "R6": 1,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 8,
+     "of": 18
+    },
+    {
+     "key": "yang2023dual",
+     "label": "Yang and Liò, 2023",
+     "values": {
+      "R1": 0,
+      "R2": 1,
+      "R3": 1,
+      "R4": 2,
+      "R5": 0,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 0
+     },
+     "total": 8,
+     "of": 18
+    },
+    {
+     "key": "zhou2020dudornet",
+     "label": "Zhou and Zhou, 2020",
+     "values": {
+      "R1": 1,
+      "R2": 0,
+      "R3": 1,
+      "R4": 1,
+      "R5": 0,
+      "R6": 2,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 8,
+     "of": 18
+    },
+    {
+     "key": "chen2024accelerated",
+     "label": "Chen et al., 2024a",
+     "values": {
+      "R1": 1,
+      "R2": 0,
+      "R3": 1,
+      "R4": 1,
+      "R5": 0,
+      "R6": 1,
+      "R7": 1,
+      "R8": 1,
+      "R9": 1
+     },
+     "total": 7,
+     "of": 18
+    }
+   ],
+   "scale": {
+    "min": 0,
+    "max": 2
+   },
+   "mean": true,
+   "total_label": "Total"
+  },
+  {
+   "id": "headline-vs-strict",
+   "type": "dots",
+   "title": "Headline gains against the same paper's stricter comparison",
+   "caption": "For the papers in the table below. Hollow points are the headline gains and filled points the stricter numbers from the same paper; the reason is under each name. Every headline shrinks; two papers give no stricter dB value.",
+   "place": {
+    "section": "Larger gains come from weaker setups",
+    "after": "Within papers, every large headline"
+   },
+   "source": {
+    "section": "Larger gains come from weaker setups"
+   },
+   "mention": "Figure {n} plots the papers in the table below.",
+   "axis": {
+    "min": 0,
+    "max": 8,
+    "signed": true,
+    "unit": "dB",
+    "label": "PSNR gain over the comparator (dB)"
+   },
+   "series": [
+    {
+     "id": "headline",
+     "label": "headline gain",
+     "marker": "hollow",
+     "colour": "muted"
+    },
+    {
+     "id": "strict",
+     "label": "same paper's stricter comparison",
+     "marker": "filled",
+     "colour": 1
+    }
+   ],
+   "rows": [
+    {
+     "key": "zhou2022dual",
+     "label": "Zhou et al., 2022",
+     "sub": "synthetic phase and coils",
+     "values": {
+      "headline": [
+       7.4
+      ]
+     },
+     "text": "+7.4 dB vs SSDU, simulated HCP",
+     "note": "→ real data compared only with CG-SENSE, by readers"
+    },
+    {
+     "key": "zimmermann2024nosense",
+     "label": "Zimmermann and Kofler, 2024",
+     "sub": "under-tuned baseline",
+     "values": {
+      "headline": [
+       3.6,
+       6.6
+      ],
+      "strict": [
+       1.35,
+       1.58
+      ]
+     },
+     "text": "+3.6 to +6.6 dB vs its E2E-VarNet",
+     "note": "→ k-space U-Net worth 1.35–1.58 dB, unmatched"
+    },
+    {
+     "key": "sriram2020grappanet",
+     "label": "Sriram et al., 2020b",
+     "sub": "under-tuned baseline; GRAPPA layer",
+     "values": {
+      "headline": [
+       4.9
+      ],
+      "strict": [
+       1.16
+      ]
+     },
+     "text": "+4.9 dB vs VarNet, 4x PD",
+     "note": "→ +1.16 dB vs capacity-matched U-Net"
+    },
+    {
+     "key": "singhjatyani2025unified",
+     "label": "Singh Jatyani et al., 2025",
+     "sub": "unequal training",
+     "values": {
+      "headline": [
+       4
+      ],
+      "strict": [
+       0.3,
+       0.6
+      ]
+     },
+     "text": "+4 dB vs E2E-VarNet (abstract)",
+     "note": "→ +0.3 / +0.6 dB, same training"
+    },
+    {
+     "key": "singh2022joint",
+     "label": "Singh et al., 2022",
+     "sub": "DC not stated",
+     "values": {
+      "headline": [
+       4
+      ]
+     },
+     "text": "+4.0 dB, image-L1 loss row",
+     "note": "→ same final SSIM inside MoDL"
+    },
+    {
+     "key": "chen2024accelerated",
+     "label": "Chen et al., 2024a",
+     "sub": "magnitude-derived k-space",
+     "values": {
+      "headline": [
+       3.16
+      ],
+      "strict": [
+       0.3
+      ]
+     },
+     "text": "+3.16 dB vs DCAMSR, BraTS 4x",
+     "note": "→ +0.3 dB on fastMRI single-coil"
+    },
+    {
+     "key": "meng2026dh",
+     "label": "Meng et al., 2026",
+     "sub": "weaker re-run baselines",
+     "values": {
+      "headline": [
+       3.09
+      ],
+      "strict": [
+       0.37
+      ]
+     },
+     "text": "+3.09 dB vs FMTNet, Calgary-Campinas",
+     "note": "→ +0.37 dB vs ReconFormer, SKM-TEA"
+    },
+    {
+     "key": "eo2018kiki",
+     "label": "Eo et al., 2018a",
+     "sub": "magnitude-derived k-space",
+     "values": {
+      "headline": [
+       2.29
+      ],
+      "strict": [
+       1.92
+      ]
+     },
+     "text": "+2.29 dB vs classical methods (mean)",
+     "note": "→ +1.92 dB vs equal-capacity image cascade"
+    },
+    {
+     "key": "xing2026multi",
+     "label": "Xing et al., 2026",
+     "sub": "simulated data; capacity",
+     "values": {
+      "headline": [
+       1.34
+      ],
+      "strict": [
+       0.3,
+       0.84
+      ]
+     },
+     "text": "+1.34 dB vs DuDoRNet, BraTS 4x",
+     "note": "→ +0.84 dB raw M4Raw; +0.30 ablation"
+    }
+   ]
+  },
+  {
+   "id": "rigor-by-year",
+   "type": "scatter",
+   "title": "Rigor score against publication year",
+   "caption": "One point per appraised paper; the total is the sum of nine criteria scored 0–2. Newer papers do not score higher.",
+   "place": {
+    "section": "Per-criterion patterns",
+    "after": "paragraph"
+   },
+   "source": {
+    "section": "Methodological rigor"
+   },
+   "x": {
+    "label": "Year of the version cited",
+    "min": 2017,
+    "max": 2026
+   },
+   "y": {
+    "label": "Rigor score (of 18)",
+    "min": 0,
+    "max": 18
+   },
+   "points": [
+    {
+     "key": "xu2025attention",
+     "label": "Xu et al., 2025a",
+     "x": 2025,
+     "y": 15,
+     "tag": true
+    },
+    {
+     "key": "klug2024motionttt",
+     "label": "Klug et al., 2024",
+     "x": 2024,
+     "y": 14
+    },
+    {
+     "key": "pramanik2020deep",
+     "label": "Pramanik et al., 2020",
+     "x": 2020,
+     "y": 14
+    },
+    {
+     "key": "singhjatyani2025unified",
+     "label": "Singh Jatyani et al., 2025",
+     "x": 2025,
+     "y": 14
+    },
+    {
+     "key": "singh2022joint",
+     "label": "Singh et al., 2022",
+     "x": 2022,
+     "y": 14
+    },
+    {
+     "key": "souza2020dual",
+     "label": "Souza et al., 2020",
+     "x": 2020,
+     "y": 14,
+     "tag": true
+    },
+    {
+     "key": "liu2024image",
+     "label": "Liu et al., 2024c",
+     "x": 2024,
+     "y": 13
+    },
+    {
+     "key": "zhang2026revisible",
+     "label": "Zhang et al., 2026c",
+     "x": 2026,
+     "y": 13
+    },
+    {
+     "key": "zhou2022dual",
+     "label": "Zhou et al., 2022",
+     "x": 2022,
+     "y": 13
+    },
+    {
+     "key": "zimmermann2024nosense",
+     "label": "Zimmermann and Kofler, 2024",
+     "x": 2024,
+     "y": 13
+    },
+    {
+     "key": "meng2026dh",
+     "label": "Meng et al., 2026",
+     "x": 2026,
+     "y": 12
+    },
+    {
+     "key": "ran2020mdrecon",
+     "label": "Ran et al., 2021",
+     "x": 2021,
+     "y": 12
+    },
+    {
+     "key": "xing2026multi",
+     "label": "Xing et al., 2026",
+     "x": 2026,
+     "y": 12
+    },
+    {
+     "key": "zhang2025camp",
+     "label": "Zhang et al., 2025a",
+     "x": 2025,
+     "y": 12
+    },
+    {
+     "key": "liu2019mantis",
+     "label": "Liu et al., 2019",
+     "x": 2019,
+     "y": 11
+    },
+    {
+     "key": "sriram2020grappanet",
+     "label": "Sriram et al., 2020b",
+     "x": 2020,
+     "y": 11
+    },
+    {
+     "key": "zhang2026dualdomain",
+     "label": "Zhang et al., 2026a",
+     "x": 2026,
+     "y": 11
+    },
+    {
+     "key": "souza2019hybrid",
+     "label": "Souza et al., 2019",
+     "x": 2019,
+     "y": 10
+    },
+    {
+     "key": "eo2018kiki",
+     "label": "Eo et al., 2018a",
+     "x": 2018,
+     "y": 9
+    },
+    {
+     "key": "liu2022dualdomain",
+     "label": "Liu et al., 2022b",
+     "x": 2022,
+     "y": 9
+    },
+    {
+     "key": "zhang2025mdpg",
+     "label": "Zhang et al., 2025b",
+     "x": 2025,
+     "y": 9
+    },
+    {
+     "key": "quan2018compressed",
+     "label": "Quan et al., 2018",
+     "x": 2018,
+     "y": 8
+    },
+    {
+     "key": "yang2023dual",
+     "label": "Yang and Liò, 2023",
+     "x": 2023,
+     "y": 8
+    },
+    {
+     "key": "zhou2020dudornet",
+     "label": "Zhou and Zhou, 2020",
+     "x": 2020,
+     "y": 8
+    },
+    {
+     "key": "chen2024accelerated",
+     "label": "Chen et al., 2024a",
+     "x": 2024,
+     "y": 7,
+     "tag": true
+    }
+   ]
+  },
+  {
+   "id": "corpus-by-year",
+   "type": "columns",
+   "title": "Papers catalogued per year, by tier",
+   "caption": "All 284 catalogued papers, under the year of the version cited.",
+   "place": {
+    "section": "Scope and method",
+    "after": "paragraph"
+   },
+   "series": [
+    {
+     "id": "core",
+     "label": "Core"
+    },
+    {
+     "id": "boundary",
+     "label": "Boundary"
+    },
+    {
+     "id": "adjacent",
+     "label": "Adjacent"
+    }
+   ],
+   "columns": [
+    {
+     "x": "2016",
+     "values": {
+      "boundary": 1
+     }
+    },
+    {
+     "x": "2017",
+     "values": {}
+    },
+    {
+     "x": "2018",
+     "values": {
+      "core": 4,
+      "boundary": 11,
+      "adjacent": 1
+     }
+    },
+    {
+     "x": "2019",
+     "values": {
+      "core": 7,
+      "boundary": 9,
+      "adjacent": 1
+     }
+    },
+    {
+     "x": "2020",
+     "values": {
+      "core": 13,
+      "boundary": 13
+     }
+    },
+    {
+     "x": "2021",
+     "values": {
+      "core": 8,
+      "boundary": 12,
+      "adjacent": 3
+     }
+    },
+    {
+     "x": "2022",
+     "values": {
+      "core": 20,
+      "boundary": 17,
+      "adjacent": 1
+     }
+    },
+    {
+     "x": "2023",
+     "values": {
+      "core": 24,
+      "boundary": 13
+     }
+    },
+    {
+     "x": "2024",
+     "values": {
+      "core": 32,
+      "boundary": 19
+     }
+    },
+    {
+     "x": "2025",
+     "values": {
+      "core": 28,
+      "boundary": 15
+     }
+    },
+    {
+     "x": "2026",
+     "values": {
+      "core": 20,
+      "boundary": 12
+     }
+    }
+   ],
+   "axis": {
+    "label": "papers per year"
+   }
+  }
+ ]
+}

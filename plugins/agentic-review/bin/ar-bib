@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""Build 5-final/references.bib for the corpus, the omission additions and the background references.
+
+DOI -> BibTeX by content negotiation at doi.org; arXiv only -> @misc from the arXiv API; neither -> @misc from
+the record's own fields. Citation keys are the record keys. Responses are cached in <dir>/.cache/bib/;
+--offline uses the cache only and sends nothing (uncached DOIs then fall back to the record's fields).
+
+Every entry compiles with LaTeX: HTML entities from the publishers' metadata are decoded and special characters
+escaped (outside url and doi); acronyms and mixed-case words in titles are kept in braces ({MRI}, {NeRF}), taking
+the record's title when the publisher's differs only in case; authors are written "Family, Given". arXiv and
+record-built entries take the citation year the review's labels use; DOI entries keep the publisher's year.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import html
+import re
+import urllib.parse
+
+import arlib
+
+SOURCES = [arlib.CORPUS, arlib.OMISSIONS, arlib.BACKGROUND]
+BIBTEX = {"Accept": "application/x-bibtex; charset=utf-8"}
+
+
+TEX_SPECIAL = {
+    "&": r"\&",
+    "%": r"\%",
+    "#": r"\#",
+    "_": r"\_",
+    "$": r"\$",
+    "{": r"\{",
+    "}": r"\}",
+    "~": r"\textasciitilde{}",
+    "^": r"\textasciicircum{}",
+    "\\": r"\textbackslash{}",
+}
+VERBATIM_FIELDS = {"url", "doi", "eprint", "archiveprefix"}
+MONTHS = {"jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"}
+
+
+def unescape(s):
+    """Decode HTML entities, also when the metadata encoded them twice (&amp;amp;)."""
+    for _ in range(3):
+        u = html.unescape(s)
+        if u == s:
+            break
+        s = u
+    return s
+
+
+def tex_escape(s):
+    """Plain text (a record's field) -> BibTeX-safe text."""
+    s = unescape(str(s or ""))
+    return "".join(TEX_SPECIAL.get(c, c) for c in s)
+
+
+def escape_bare(value):
+    """A field value that may already hold BibTeX markup (braces, \\& ...): decode HTML entities, escape the
+    characters LaTeX cannot take bare, leave existing escapes and braces alone."""
+    value = unescape(value)
+    return re.sub(r"(?<!\\)([&%#])", r"\\\1", value)  # $ stays: publishers write math as $T_2$
+
+
+ACRONYM = re.compile(r"(?<![{\w\\])([A-Za-z0-9]*[A-Z][A-Za-z0-9]*(?:-[A-Za-z0-9]+)*)(?![\w}])")
+
+
+def protect_case(title):
+    """Wrap words a bibliography style must not lower-case ({MRI}, {NeRF}, {k-Space}, {T2}) in braces."""
+
+    def keep(seg):
+        caps = sum(c.isupper() for c in seg)
+        return (
+            caps >= 2
+            or any(c.isupper() for c in seg[1:])
+            or (caps and not seg[:1].isupper())
+            or (caps and any(c.isdigit() for c in seg))
+        )
+
+    def wrap(m):
+        w = m.group(1)
+        return "{" + w + "}" if any(keep(seg) for seg in w.split("-")) else w
+
+    return ACRONYM.sub(wrap, title)
+
+
+def bib_fields(bib):
+    """[(name, start, end)] of each top-level `name = {value}` / `name = "value"` / `name = 123`; start..end spans
+    the value without its delimiters."""
+    out, i, n = [], bib.find(",") + 1, len(bib)
+    while 0 < i < n:
+        m = re.compile(r"\s*([A-Za-z_-]+)\s*=\s*").match(bib, i)
+        if not m:
+            break
+        name, j = m.group(1), m.end()
+        if j < n and bib[j] == "{":
+            depth, k = 0, j
+            while k < n:
+                if bib[k] == "{" and bib[k - 1] != "\\":
+                    depth += 1
+                elif bib[k] == "}" and bib[k - 1] != "\\":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                k += 1
+            out.append((name, j + 1, k))
+            i = k + 1
+        elif j < n and bib[j] == '"':
+            k = bib.find('"', j + 1)
+            out.append((name, j + 1, k))
+            i = k + 1
+        else:
+            k = j
+            while k < n and bib[k] not in ",}":
+                k += 1
+            out.append((name, j, k))
+            i = k
+        while i < n and bib[i] in " \t\r\n":
+            i += 1
+        if i < n and bib[i] == ",":
+            i += 1
+        else:
+            break
+    return out
+
+
+def fix_doi_entry(bib, r):
+    """Clean a publisher's BibTeX entry: decode entities and escape specials, restore the case of the title from
+    the record when they differ only in case, and protect its acronyms. The publisher's year is kept."""
+    fields = bib_fields(bib)
+    for name, a, b in reversed(fields):
+        low, value = name.lower(), bib[a:b]
+        if low in VERBATIM_FIELDS:
+            continue
+        if low == "title":
+            mine = unescape(str(r.get("title") or ""))
+            theirs = unescape(value)
+            if (
+                mine
+                and arlib.norm_text(mine) == arlib.norm_text(theirs)
+                and "{" not in theirs
+                and sum(c.isupper() for c in mine) > sum(c.isupper() for c in theirs)
+            ):
+                value = tex_escape(mine)
+            else:
+                value = escape_bare(value)
+            value = protect_case(value) if "{" not in value.replace("\\{", "") else value
+        elif low == "year":
+            continue
+        elif low == "month" and bib[a - 1 : a] not in '{"' and value.strip().lower()[:3] in MONTHS:
+            value = value.strip().lower()[:3]  # BibTeX's month macros are jan ... dec ("july", "sept" are not)
+        else:
+            value = escape_bare(value)
+        bib = bib[:a] + value + bib[b:]
+    return bib
+
+
+def rekey(bib, key):
+    bib = re.sub(r"^@(\w+)\{[^,]*,", lambda m: "@" + m.group(1) + "{" + key + ",", bib.strip(), count=1)
+    bib = re.sub(r"</?(scp|i|b|em|strong|sub|sup|mml:[a-z]+|inline-formula|tex-math)\b[^>]*>", "", bib)
+    return bib.replace("‐", "-").replace("‑", "-").replace("–", "--").replace("—", "---")
+
+
+def misc(key, title, authors, year, extra):
+    lines = [f"@misc{{{key},", f"  title = {{{protect_case(tex_escape(title))}}},"]
+    if authors:
+        lines.append(f"  author = {{{' and '.join(authors)}}},")
+    if year:
+        lines.append(f"  year = {{{year}}},")
+    lines += [
+        f"  {k} = {{{v if k.lower() in VERBATIM_FIELDS else escape_bare(str(v))}}}," for k, v in extra.items() if v
+    ]
+    return "\n".join(lines).rstrip(",") + "\n}"
+
+
+def arxiv_meta(ids, cache, offline):
+    out = {}
+    ids = sorted(set(ids))
+    for i in range(0, len(ids), 40):
+        chunk = ids[i : i + 40]
+        url = "https://export.arxiv.org/api/query?id_list=" + ",".join(chunk) + f"&max_results={len(chunk)}"
+        try:
+            data = arlib.http_get(url, cache, offline=offline)
+        except arlib.OfflineMiss:
+            continue
+        if data:
+            out.update(arlib.parse_arxiv_feed(data))
+    return out
+
+
+def bib_authors(names, r, et_al=False):
+    """Author strings -> 'Family, Given' for BibTeX; the first author's family name comes from the record."""
+    names = [n.strip() for n in names if n and n.strip() and n.strip().lower() not in ("et al.", "et al", "others")]
+    first = arlib.first_surname(r) if names else None
+    out = [arlib.bibtex_name(n, first if i == 0 else None) for i, n in enumerate(names)]
+    if et_al:
+        out.append("others")
+    return [tex_escape(n).replace(r"\{", "{").replace(r"\}", "}") for n in out]
+
+
+def record_authors(r):
+    return bib_authors(arlib.split_authors(r), r, et_al=arlib.has_et_al(r))
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-bib", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("--offline", action="store_true", help="use cached responses only; send no request")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    cache = rdir / ".cache" / "bib"
+    if not args.offline:
+        cache.mkdir(parents=True, exist_ok=True)
+
+    recs, seen, dup = [], set(), []
+    for path in SOURCES:
+        p = rdir / path
+        if not p.exists():
+            continue
+        try:
+            rows = arlib.load_jsonl(p)
+        except ValueError as e:
+            print(f"error: {e}")
+            return 1
+        for r in rows:
+            k = r.get("key")
+            if not k:
+                continue
+            if k in seen:
+                dup.append(k)
+                continue
+            seen.add(k)
+            recs.append(r)
+    if not recs:
+        print("no records found (corpus, omissions, background)")
+        return 1
+
+    arx = arxiv_meta(
+        [
+            arlib.norm_arxiv(r["arxiv_id"])
+            for r in recs
+            if r.get("arxiv_id")
+            and not (arlib.norm_doi(r.get("doi")) and not arlib.is_arxiv_doi(arlib.norm_doi(r.get("doi"))))
+        ],
+        cache,
+        args.offline,
+    )
+    entries = []
+    report = {"doi": 0, "arxiv": 0, "record": 0, "doi_failed": [], "offline_skipped": 0}
+    for r in recs:
+        key = r["key"]
+        doi = arlib.norm_doi(r.get("doi")) or arlib.norm_doi((r.get("ref_check") or {}).get("proposed_doi")) or ""
+        bib = None
+        if doi and not arlib.is_arxiv_doi(doi):
+            try:
+                data = arlib.http_get(
+                    "https://doi.org/" + urllib.parse.quote(doi, safe="/"), cache, BIBTEX, offline=args.offline
+                )
+                if data and data.lstrip().startswith(b"@"):
+                    bib = fix_doi_entry(rekey(data.decode("utf-8", "replace"), key), r)
+                    report["doi"] += 1
+                else:
+                    report["doi_failed"].append(key)
+            except arlib.OfflineMiss:
+                report["offline_skipped"] += 1
+        aid = arlib.norm_arxiv(r.get("arxiv_id"))
+        if bib is None and aid and aid in arx:
+            m = arx[aid]
+            bib = misc(
+                key,
+                m["title"],
+                bib_authors(m["authors"], r),
+                arlib.cite_year(r) or m["year"],
+                {
+                    "eprint": aid,
+                    "archivePrefix": "arXiv",
+                    "url": f"https://arxiv.org/abs/{aid}",
+                    "note": "arXiv preprint",
+                },
+            )
+            report["arxiv"] += 1
+        if bib is None:
+            bib = misc(
+                key,
+                r.get("title"),
+                record_authors(r),
+                arlib.cite_year(r),
+                {
+                    "howpublished": arlib.venue_vor(r) or "",
+                    "doi": doi if doi and not arlib.is_arxiv_doi(doi) else "",
+                    "url": arlib.record_url(r),
+                },
+            )
+            report["record"] += 1
+        entries.append(bib)
+
+    title = (review.get("edition") or {}).get("title") or review.get("topic") or rdir.name
+    head = [
+        f'% Bibliography for "{title}"',
+        f"% Generated {arlib.now_iso()[:10]} by ar-bib: DOI entries via doi.org content negotiation; "
+        f"arXiv entries via the arXiv API; others from the records.",
+        "",
+    ]
+    dest = rdir / "5-final" / "references.bib"
+    text = "\n".join(head) + "\n" + "\n\n".join(entries) + "\n"
+    arlib.atomic_write_text(dest, text)
+    keys = re.findall(r"^@\w+\{([^,]+),", text, flags=re.M)
+    print(
+        f"entries={len(entries)} unique_keys={len(set(keys))} via_doi={report['doi']} via_arxiv={report['arxiv']} "
+        f"from_record={report['record']} doi_failed={report['doi_failed']}"
+        + (f" offline_skipped={report['offline_skipped']}" if args.offline else "")
+    )
+    print(f"wrote {arlib.rel(rdir, dest)}")
+    if dup:
+        print(f"problem: duplicate keys skipped: {dup}")
+    return 1 if (dup or len(set(keys)) != len(keys) or report["doi_failed"]) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

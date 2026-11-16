@@ -1,0 +1,281 @@
+#!/usr/bin/env python3
+"""Build a shareable copy of the reading edition: one zip that works on any computer, without Zotero.
+
+The zip holds a folder with index.html (the reading edition in share mode), papers/<key>.pdf (the cited papers'
+PDFs, copied from the Zotero storage folder), viewer.html with PDF.js (lib/edition/vendor/pdfjs, Apache 2.0), the
+launchers and a README. Opened with a launcher (served from localhost), citations open the PDF in the viewer, which
+draws this review's highlights in their colours, scrolls to the cited one and shows its note. Opened by
+double-clicking index.html, citations open the PDF in the browser's own reader at the cited page. Hovering a
+citation shows the highlighted passage and its note either way. Papers whose PDF is not in the package open the
+publisher's page.
+
+Which PDFs go in (--pdfs): `all`; `arxiv` (default), only PDFs that carry arXiv's stamp ("arXiv:2212.08479v5" in the
+margin of page 1), a conservative way to leave publishers' versions out; `none`, the page alone with publisher
+links. Whoever shares the zip is responsible for the right to share the PDFs in it (licences, institutional
+agreements).
+
+Needs 7-edition/zotero_snapshot.json (written by ar-edition in Zotero mode; --snapshot FILE uses another) and the
+Zotero data folder (--zotero-dir, else review.json zotero.data_dir, else ~/Zotero), whose storage/<attachment key>/
+folders hold the PDFs. Reads nothing over the network and changes nothing in Zotero.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import html
+import importlib.machinery
+import importlib.util
+import json
+import re
+import shutil
+import subprocess
+import tempfile
+import zipfile
+import zlib
+
+import arlib
+
+EDITION = "7-edition"
+LIB = Path(__file__).resolve().parent.parent / "lib" / "edition"
+PDFJS = {"pdf.min.mjs": "pdf.min.js", "pdf.worker.min.mjs": "pdf.worker.min.js", "LICENSE": "LICENSE"}
+STAMP = re.compile(rb"arXiv:\s*\d{4}\.\d{4,5}(?:v\d+)?|arXiv:[a-z-]+(?:\.[A-Z]{2})?/\d{7}")
+
+
+def is_arxiv_pdf(path, max_bytes=4_000_000, max_streams=60):
+    """True when the PDF carries arXiv's stamp: looked for in the first compressed streams (page 1) and the raw
+    start of the file. A publisher's PDF does not have it."""
+    try:
+        with open(path, "rb") as f:
+            head = f.read(max_bytes)
+    except OSError:
+        return False
+    if STAMP.search(head[:200_000]):
+        return True
+    n = 0
+    for m in re.finditer(rb"stream\r?\n", head):
+        end = head.find(b"endstream", m.end())
+        if end < 0:
+            break
+        try:
+            text = zlib.decompressobj().decompress(head[m.end() : end], 2_000_000)
+        except zlib.error:
+            continue
+        if STAMP.search(text) or b"(arXiv:" in text:
+            return True
+        n += 1
+        if n >= max_streams:
+            break
+    return False
+
+
+def load_edition_module():
+    """bin/ar-edition as a module, for its matching of citation keys to Zotero items."""
+    path = Path(__file__).resolve().parent / "ar-edition"
+    loader = importlib.machinery.SourceFileLoader("ar_edition", str(path))
+    spec = importlib.util.spec_from_loader(loader.name, loader)
+    assert spec is not None
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def storage_pdf(storage, att):
+    d = storage / att
+    if not d.is_dir():
+        return None
+    pdfs = sorted(p for p in d.iterdir() if p.suffix.lower() == ".pdf" and p.is_file())
+    return pdfs[0] if pdfs else None
+
+
+def viewer_annotations(items, share, tag, zlinks):
+    """{pdf file name: {annotation key: {p, r, c, x, m}}}: this review's highlights on each packaged PDF."""
+    out = {}
+    for item in items.values():
+        for att in item.get("atts") or []:
+            path = share.get(att["key"])
+            if not path:
+                continue
+            anns = {}
+            for a in att.get("anns") or []:
+                m = zlinks.review_bracket(a, tag)
+                if not m or not isinstance(a.get("page_index"), int):
+                    continue
+                anns[a["key"]] = {
+                    "p": a["page_index"],
+                    "r": a.get("rects") or [],
+                    "c": a.get("colour") or "other",
+                    "x": (a.get("text") or "")[:800],
+                    "m": (a.get("comment") or "")[m.end() :].strip()[:800],
+                }
+            out[path.split("/", 1)[1]] = anns
+    return out
+
+
+def write_viewer(stage, title, anns):
+    (stage / "pdfjs").mkdir()
+    for src, dst in PDFJS.items():
+        shutil.copy2(LIB / "vendor" / "pdfjs" / src, stage / "pdfjs" / dst)
+    data = json.dumps(anns, ensure_ascii=False, separators=(",", ":")).replace("</", "<\\/")
+    text = (LIB / "viewer.html").read_text(encoding="utf-8")
+    text = text.replace("__TITLE__", html.escape(title)).replace("__ANNS_JSON__", data)
+    (stage / "viewer.html").write_text(text, encoding="utf-8")
+
+
+def slug(s):
+    s = re.sub(r"[^A-Za-z0-9]+", "-", arlib.fold(str(s or "")).lower()).strip("-")
+    return s[:60] or "review"
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-share", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument(
+        "--pdfs",
+        choices=["all", "arxiv", "none"],
+        default="arxiv",
+        help="which PDFs go in the package (default: arxiv)",
+    )
+    ap.add_argument("--out", metavar="FILE", help=f"the zip (default {EDITION}/<storage_key>-share.zip)")
+    ap.add_argument(
+        "--zotero-dir", metavar="DIR", help="Zotero data folder (default review.json zotero.data_dir, else ~/Zotero)"
+    )
+    ap.add_argument("--snapshot", metavar="FILE", help=f"Zotero snapshot (default {EDITION}/zotero_snapshot.json)")
+    ap.add_argument("--dry-run", action="store_true", help="count the PDFs each choice would include; write nothing")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    zcfg = review.get("zotero") or {}
+    ed = review.get("edition") or {}
+
+    snap_path = arlib.resolve(rdir, args.snapshot) if args.snapshot else rdir / EDITION / "zotero_snapshot.json"
+    if not snap_path.exists():
+        print(f"missing {arlib.rel(rdir, snap_path)}: build the Zotero edition first (/agentic-review:run 7)")
+        return 1
+    zdir = Path(args.zotero_dir or zcfg.get("data_dir") or "~/Zotero").expanduser()
+    storage = zdir / "storage"
+    if args.pdfs != "none" and not storage.is_dir():
+        print(
+            f"no Zotero storage folder at {storage}: pass --zotero-dir (Zotero › Settings › Advanced › Files and "
+            f"Folders shows the data directory)"
+        )
+        return 1
+
+    edition = load_edition_module()
+    from edition import zlinks
+
+    items = zlinks.load_snapshot(snap_path)
+    rows = zlinks.read_citemap(rdir / arlib.CITEMAP) if (rdir / arlib.CITEMAP).exists() else []
+    warnings = []
+    k2i, _how = edition.key_to_item(rdir, review, rows, items, warnings)
+    cited = set()
+    review_md = rdir / arlib.REVIEW_MD
+    if review_md.exists():
+        urls = set(re.findall(r"\]\((https?://[^)\s]+)\)", review_md.read_text(encoding="utf-8")))
+        cited = {r["key"] for r in rows if r.get("url") in urls}
+
+    if args.dry_run:
+        counts = {"all": 0, "arxiv": 0}
+        size = {"all": 0, "arxiv": 0}
+        for key in sorted(k2i):
+            for att in (items.get(k2i[key]) or {}).get("atts") or []:
+                src = storage_pdf(storage, att["key"]) if storage.is_dir() else None
+                if src is None:
+                    continue
+                counts["all"] += 1
+                size["all"] += src.stat().st_size
+                if is_arxiv_pdf(src):
+                    counts["arxiv"] += 1
+                    size["arxiv"] += src.stat().st_size
+        print(
+            f"PDFs in Zotero for the cited papers: all {counts['all']} ({size['all'] / 1e6:.0f} MB); "
+            f"with arXiv's stamp {counts['arxiv']} ({size['arxiv'] / 1e6:.0f} MB); none 0"
+        )
+        return 0
+
+    name = slug(ed.get("storage_key") or ed.get("title") or rdir.name) + "-share"
+    out = Path(args.out).expanduser().resolve() if args.out else rdir / EDITION / f"{name}.zip"
+    stage_root = Path(tempfile.mkdtemp(prefix="ar-share-"))
+    stage = stage_root / name
+    papers = stage / "papers"
+    papers.mkdir(parents=True)
+    share, included, left_out, missing = {}, [], [], []
+    try:
+        for key in sorted(k2i):
+            item = items.get(k2i[key])
+            if not item:
+                continue
+            atts = sorted(item.get("atts") or [], key=lambda a: -len(a.get("anns") or []))
+            for i, att in enumerate(atts):
+                src = storage_pdf(storage, att["key"]) if args.pdfs != "none" else None
+                if src is None:
+                    if args.pdfs != "none":
+                        missing.append(key)
+                    continue
+                if args.pdfs == "arxiv" and not is_arxiv_pdf(src):
+                    left_out.append(key)
+                    continue
+                fname = f"{key}.pdf" if i == 0 else f"{key}-{i + 1}.pdf"
+                shutil.copy2(src, papers / fname)
+                share[att["key"]] = f"papers/{fname}"
+                included.append(key)
+        map_path = stage_root / "share_map.json"
+        map_path.write_text(json.dumps(share, indent=1), encoding="utf-8")
+        cmd = [
+            sys.executable,
+            str(Path(__file__).resolve().parent / "ar-edition"),
+            str(rdir),
+            "--snapshot",
+            str(snap_path),
+            "--share-map",
+            str(map_path),
+            "--out",
+            str(stage / "index.html"),
+        ]
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8")
+        if p.returncode != 0:
+            print(p.stdout + p.stderr)
+            print("ar-edition failed in share mode: nothing written")
+            return 1
+        out.parent.mkdir(parents=True, exist_ok=True)
+        if share:
+            write_viewer(
+                stage,
+                str(ed.get("title") or review.get("topic") or rdir.name),
+                viewer_annotations(items, share, zcfg.get("tag") or "", zlinks),
+            )
+        tmp_zip = out.with_suffix(".zip.tmp")
+        with zipfile.ZipFile(tmp_zip, "w", zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            for f in sorted(stage.rglob("*")):
+                if f.is_file():
+                    info = zipfile.ZipInfo.from_file(f, f"{name}/{f.relative_to(stage).as_posix()}")
+                    info.compress_type = zipfile.ZIP_STORED if f.suffix.lower() == ".pdf" else zipfile.ZIP_DEFLATED
+                    with open(f, "rb") as fh:
+                        z.writestr(info, fh.read())
+        tmp_zip.replace(out)
+    finally:
+        shutil.rmtree(stage_root, ignore_errors=True)
+
+    size = out.stat().st_size / 1e6
+    inc = sorted(set(included))
+    lo = sorted(set(left_out) - set(inc))
+    print(
+        f"wrote {arlib.rel(rdir, out)}: {size:.1f} MB; PDFs included {len(inc)} (--pdfs {args.pdfs}); "
+        f"left out {len(lo)}; without a PDF in Zotero {len(set(missing) - set(inc))}; "
+        f"cited papers whose citations open a PDF {len(cited & set(inc))} of {len(cited)}"
+    )
+    for line in p.stdout.splitlines()[:1]:
+        print("  page: " + line.split(": ", 1)[-1])
+    if lo:
+        print("left out (no arXiv stamp; --pdfs all includes them): " + ", ".join(lo))
+    for w in warnings[:10]:
+        print(f"warning: {w}")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

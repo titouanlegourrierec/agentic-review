@@ -1,0 +1,118 @@
+#!/usr/bin/env python3
+"""Build 5-final/citation_map.tsv: key -> unique author-year label -> link, for every citable record.
+
+Reads 2-merged/corpus.jsonl, 4-checks/omissions_checked.jsonl and 3-analysis/background_refs.jsonl (missing
+files are skipped). Labels: "Smith, 2021", "Smith and Jones, 2021", "Smith et al., 2021"; equal labels get
+a, b, c... in title order. The year is the citation year (explicit cite_year, else the version-of-record year
+unless it lies in the future, else the record's year). Link: DOI, else arXiv, else source_of_record.
+Columns: key, label, url, source, tier, family, cite_year, title. Exit 1 on duplicate keys or missing links.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+from collections import defaultdict
+
+import arlib
+
+SOURCES = [(arlib.CORPUS, "corpus"), (arlib.OMISSIONS, "omission"), (arlib.BACKGROUND, "background")]
+
+
+is_initials, PARTICLES, ET_AL = arlib.is_initials, arlib.PARTICLES, arlib.ET_AL
+split_authors, has_et_al, surname, first_surname = (
+    arlib.split_authors,
+    arlib.has_et_al,
+    arlib.surname,
+    arlib.first_surname,
+)
+
+
+def base_label(r):
+    y = arlib.cite_year(r)
+    a = split_authors(r)
+    n = 9 if has_et_al(r) else max(1, len(a))
+    if n > 2:
+        return f"{first_surname(r)} et al., {y}"
+    if n == 2:
+        return f"{first_surname(r)} and {surname(a[1])}, {y}"
+    return f"{first_surname(r)}, {y}"
+
+
+def build(rdir, review):
+    rows, problems = [], []
+    for path, src in SOURCES:
+        p = rdir / path
+        if not p.exists():
+            continue
+        for r in arlib.load_jsonl(p):
+            r["_src"] = src
+            rows.append(r)
+    keys = set()
+    for r in rows:
+        if r.get("key") in keys:
+            problems.append(f"duplicate key {r.get('key')} ({r['_src']})")
+        keys.add(r.get("key"))
+    groups = defaultdict(list)
+    for r in rows:
+        groups[base_label(r)].append(r)
+    label = {}
+    for lab, rs in groups.items():
+        if len(rs) == 1:
+            label[id(rs[0])] = lab
+            continue
+        rs.sort(key=lambda r: (r.get("title") or "").lower())
+        for i, r in enumerate(rs):
+            label[id(r)] = lab + "abcdefghijklmnopqrstuvwxyz"[i] if i < 26 else f"{lab}-{i}"
+    out = ["\t".join(arlib.CITEMAP_COLUMNS)]
+    for r in rows:
+        url = arlib.record_url(r)
+        if not url:
+            problems.append(f"no link for {r.get('key')}")
+        cells = [
+            r.get("key"),
+            label[id(r)],
+            url,
+            r["_src"],
+            arlib.map_tier(r.get("tier"), review) or "",
+            r.get("family") or "",
+            arlib.cite_year(r) or "",
+            r.get("title") or "",
+        ]
+        out.append("\t".join(str(c).replace("\t", " ").replace("\r", " ").replace("\n", " ") for c in cells))
+    clashes = sum(1 for g in groups.values() if len(g) > 1)
+    return out, rows, clashes, problems
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-citemap", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    if not (rdir / arlib.CORPUS).exists():
+        print(f"missing {arlib.CORPUS}")
+        return 1
+    try:
+        out, rows, clashes, problems = build(rdir, review)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    dest = rdir / arlib.CITEMAP
+    arlib.atomic_write_text(dest, "\n".join(out) + "\n")
+    by_src = defaultdict(int)
+    for r in rows:
+        by_src[r["_src"]] += 1
+    print(f"rows={len(rows)} {dict(by_src)} label_clashes_resolved={clashes}")
+    print(f"wrote {arlib.rel(rdir, dest)}")
+    for p in problems:
+        print(f"problem: {p}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

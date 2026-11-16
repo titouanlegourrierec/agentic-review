@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""Count papers by tier and family -> 5-final/counts.json.
+
+Reads 2-merged/corpus.jsonl and 4-checks/omissions_checked.jsonl and applies 5-final/retiering.json
+({key: {"tier": ..., "family": ...}}). A paper with several families ("F3,F7") counts once in each family
+(by_tier_family); by_tier_primary_family counts only its first-listed family; papers_by_tier counts distinct
+papers. Every block is also given per source (corpus, omissions).
+Exit 1 when a re-tiered key is unknown, a key appears twice, or a tier is not core/boundary/adjacent.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+from collections import Counter, defaultdict
+
+import arlib
+
+
+def tally(rows, fam_key):
+    def sort_counts(counter):
+        return {k: counter[k] for k in sorted(counter, key=fam_key)}
+
+    papers = Counter()
+    any_fam = defaultdict(Counter)
+    primary = defaultdict(Counter)
+    multi = Counter()
+    for tier, codes in rows:
+        papers[tier] += 1
+        primary[tier][codes[0]] += 1
+        for c in codes:
+            any_fam[tier][c] += 1
+        if len(codes) > 1:
+            multi[tier] += 1
+    order = sorted(papers, key=arlib.tier_order)
+    return {
+        "papers_by_tier": {t: papers[t] for t in order},
+        "by_tier_family": {t: sort_counts(any_fam[t]) for t in order},
+        "by_tier_primary_family": {t: sort_counts(primary[t]) for t in order},
+        "multi_family_papers_by_tier": {t: multi[t] for t in order},
+        "by_family": sort_counts(sum((any_fam[t] for t in order), Counter())),
+    }
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-count", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    problems = []
+    if not (rdir / arlib.CORPUS).exists():
+        print(f"missing {arlib.CORPUS}")
+        return 1
+    try:
+        corpus = arlib.load_jsonl(rdir / arlib.CORPUS)
+        omissions = arlib.load_jsonl(rdir / arlib.OMISSIONS, missing_ok=True)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    if not (rdir / arlib.OMISSIONS).exists():
+        print(f"note: {arlib.OMISSIONS} not found; counting the corpus only")
+    retier = arlib.load_retiering(rdir)
+
+    seen = {}
+    rows = {"corpus": [], "omissions": []}
+    for source, recs in (("corpus", corpus), ("omissions", omissions)):
+        for r in recs:
+            k = r.get("key")
+            if k in seen:
+                problems.append(
+                    f"key {k} in both {seen[k]} and {source}" if seen[k] != source else f"key {k} twice in {source}"
+                )
+                continue
+            seen[k] = source
+            tier, fam = arlib.retiered(r, retier, review)
+            if tier not in arlib.TIERS:
+                problems.append(f"{k}: tier {tier!r} is not one of {arlib.TIERS}")
+            rows[source].append((tier, arlib.family_codes(fam)))
+    unknown = sorted(k for k in retier if k not in seen)
+    if unknown:
+        problems.append(f"retiering.json keys not in corpus or omissions: {unknown}")
+    moved = sum(1 for k, v in retier.items() if k in seen)
+
+    all_rows = rows["corpus"] + rows["omissions"]
+    out = {
+        "note": "Distinct papers per tier, and papers per tier x family after 5-final/retiering.json. "
+        "by_tier_family counts a multi-family paper once in each of its families; "
+        "by_tier_primary_family counts its first-listed family only.",
+        "generated": arlib.now_iso(),
+        "records": {"corpus": len(rows["corpus"]), "omissions": len(rows["omissions"]), "all": len(all_rows)},
+        "retiered": moved,
+    }
+    fam_key = arlib.family_sort_key(review)
+    out.update(tally(all_rows, fam_key))
+    out["by_source"] = {s: tally(rows[s], fam_key) for s in ("corpus", "omissions")}
+    if problems:
+        out["problems"] = problems
+    dest = rdir / "5-final" / "counts.json"
+    arlib.atomic_write_json(dest, out)
+    print(
+        f"papers={len(all_rows)} (corpus {len(rows['corpus'])}, omissions {len(rows['omissions'])}) "
+        f"retiered={moved} by_tier={out['papers_by_tier']}"
+    )
+    print(f"wrote {arlib.rel(rdir, dest)}")
+    for p in problems:
+        print(f"problem: {p}")
+    return 1 if problems else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

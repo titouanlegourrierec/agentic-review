@@ -1,0 +1,198 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__TITLE__ · PDF</title>
+<style>
+:root { --bg: #f4f2ee; --bar: #fffdf9; --ink: #1f1d1a; --muted: #6b665e; --line: #ddd8cf; --accent: #2f5d8a;
+        --yellow: #ffd400; --blue: #2ea8e5; --green: #5fb236; --red: #ff6666; --purple: #a28ae5; --other: #aaaaaa; }
+@media (prefers-color-scheme: dark) {
+  :root { --bg: #1b1a18; --bar: #24221f; --ink: #ece8e1; --muted: #a39d93; --line: #3a3732; --accent: #8db6e0; }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink);
+  font: 15px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+.top { position: sticky; top: 0; z-index: 5; }
+header { display: flex; flex-wrap: wrap; gap: 8px 14px; align-items: center;
+  padding: 8px 16px; background: var(--bar); border-bottom: 1px solid var(--line); }
+header a, header button { color: var(--accent); font: inherit; background: none; border: 1px solid var(--line);
+  border-radius: 6px; padding: 3px 10px; cursor: pointer; text-decoration: none; }
+header .name { font-weight: 600; flex: 1 1 260px; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+  white-space: nowrap; }
+header .pg { color: var(--muted); font-variant-numeric: tabular-nums; }
+#note { margin: 0; padding: 8px 16px; background: var(--bar); border-bottom: 1px solid var(--line); display: none;
+  max-height: 30vh; overflow: auto; }
+#note.on { display: block; }
+#note .kind { font-size: 13px; color: var(--muted); }
+#note .kind i { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 6px;
+  vertical-align: -1px; }
+#note blockquote { margin: 6px 0; padding-left: 10px; border-left: 3px solid var(--line); }
+#note p { margin: 4px 0 0; color: var(--muted); font-size: 14px; }
+#pages { padding: 16px 8px 48px; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.page { position: relative; background: #fff; box-shadow: 0 1px 4px rgba(0,0,0,.18); }
+.page canvas { display: block; width: 100%; height: 100%; }
+.page:not(.ready)::before { content: "Loading the page…"; position: absolute; top: 40%; width: 100%; text-align: center;
+  color: #8a857c; font-size: 14px; }
+.hl { position: absolute; mix-blend-mode: multiply; opacity: .38; border-radius: 2px; cursor: pointer; }
+.hl.target { opacity: .55; outline: 2px solid var(--accent); outline-offset: 1px; }
+.err { max-width: 640px; margin: 40px auto; padding: 0 16px; }
+</style>
+</head>
+<body>
+<div class="top">
+<header>
+  <a href="index.html">← Review</a>
+  <span class="name" id="name"></span>
+  <span class="pg" id="pg"></span>
+  <button type="button" id="zout" aria-label="Zoom out">−</button>
+  <button type="button" id="zin" aria-label="Zoom in">+</button>
+  <a id="raw" href="#" target="_blank" rel="noopener">PDF ↗</a>
+</header>
+<div id="note" aria-live="polite"></div>
+</div>
+<main id="pages"></main>
+<script id="anns" type="application/json">__ANNS_JSON__</script>
+<script type="module">
+import * as pdfjsLib from './pdfjs/pdf.min.js';
+pdfjsLib.GlobalWorkerOptions.workerSrc = './pdfjs/pdf.worker.min.js';
+
+const ANNS = JSON.parse(document.getElementById('anns').textContent);
+const LABEL = { yellow: 'Method', blue: 'Data and protocol', green: 'Result cited', red: 'Limitation or red flag',
+                purple: 'Correction or disagreement with the paper' };
+const q = new URLSearchParams(location.search);
+const file = q.get('file') || '';
+const wantPage = parseInt(q.get('page') || '0', 10) || 0;
+const wantAnn = q.get('ann') || '';
+const esc = s => String(s || '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const pagesEl = document.getElementById('pages');
+const note = document.getElementById('note');
+const pgEl = document.getElementById('pg');
+
+// Only PDFs of this package, by their path papers/<name>.pdf.
+if (!/^papers\/[A-Za-z0-9._-]+\.pdf$/.test(file)) {
+  pagesEl.innerHTML = '<p class="err">No PDF of this package was named in the address.</p>';
+  throw new Error('bad file');
+}
+document.getElementById('name').textContent = file.replace(/^papers\//, '');
+document.getElementById('raw').href = file + (wantPage ? `#page=${wantPage}` : '');
+const anns = ANNS[file.replace(/^papers\//, '')] || {};
+
+function showNote(key) {
+  const a = anns[key];
+  if (!a) { note.className = ''; note.innerHTML = ''; return; }
+  const colour = LABEL[a.c] ? a.c : 'other';
+  note.innerHTML = `<div class="kind"><i style="background:var(--${colour})"></i>${esc(LABEL[a.c] || 'Highlight')}` +
+    ` · page ${esc(a.p + 1)}</div>` + (a.x ? `<blockquote>${esc(a.x)}</blockquote>` : '') +
+    (a.m ? `<p>${esc(a.m)}</p>` : '');
+  note.className = 'on';
+  document.querySelectorAll('.hl').forEach(el => el.classList.toggle('target', el.dataset.k === key));
+}
+
+let pdf = null;
+let scale = 1;
+const pageEls = [];
+const rendered = new Map();
+
+async function layout() {
+  const width = Math.min(pagesEl.clientWidth - 16, 1100);
+  pagesEl.innerHTML = '';
+  pageEls.length = 0;
+  rendered.clear();
+  for (let n = 1; n <= pdf.numPages; n++) {
+    const page = await pdf.getPage(n);
+    const base = page.getViewport({ scale: 1 });
+    const vp = page.getViewport({ scale: (width / base.width) * scale });
+    const div = document.createElement('div');
+    div.className = 'page';
+    div.style.width = `${vp.width}px`;
+    div.style.height = `${vp.height}px`;
+    div.dataset.n = n;
+    pagesEl.appendChild(div);
+    pageEls.push({ div, page, vp });
+    // Highlights of this review on the page: Zotero rects are in PDF user space; the viewport maps them.
+    for (const [key, a] of Object.entries(anns)) {
+      if (a.p !== n - 1) continue;
+      for (const r of a.r || []) {
+        const [x1, y1, x2, y2] = vp.convertToViewportRectangle(r);
+        const el = document.createElement('div');
+        el.className = 'hl';
+        el.dataset.k = key;
+        el.title = LABEL[a.c] || 'Highlight';
+        el.style.cssText = `left:${Math.min(x1, x2)}px;top:${Math.min(y1, y2)}px;` +
+          `width:${Math.abs(x2 - x1)}px;height:${Math.abs(y2 - y1)}px;background:var(--${LABEL[a.c] ? a.c : 'other'})`;
+        el.addEventListener('click', () => showNote(key));
+        div.appendChild(el);
+      }
+    }
+  }
+  observe();
+}
+
+async function render(entry) {
+  if (rendered.has(entry.div)) return;
+  rendered.set(entry.div, true);
+  const ratio = window.devicePixelRatio || 1;
+  const canvas = document.createElement('canvas');
+  canvas.width = Math.floor(entry.vp.width * ratio);
+  canvas.height = Math.floor(entry.vp.height * ratio);
+  entry.div.prepend(canvas);
+  await entry.page.render({ canvasContext: canvas.getContext('2d'), viewport: entry.vp,
+                            transform: ratio !== 1 ? [ratio, 0, 0, ratio, 0, 0] : null }).promise;
+  entry.div.classList.add('ready');
+}
+
+function currentPage() {
+  if (!pdf) return;
+  const line = document.querySelector('.top').offsetHeight + window.innerHeight * 0.25;
+  let n = 1;
+  for (const p of pageEls) {
+    if (p.div.getBoundingClientRect().top <= line) n = Number(p.div.dataset.n);
+    else break;
+  }
+  pgEl.textContent = `page ${n} / ${pdf.numPages}`;
+}
+window.addEventListener('scroll', currentPage, { passive: true });
+
+let io = null;
+function observe() {
+  if (io) io.disconnect();
+  io = new IntersectionObserver(entries => {
+    for (const e of entries) {
+      if (!e.isIntersecting) continue;
+      const entry = pageEls.find(p => p.div === e.target);
+      if (entry) render(entry);
+    }
+  }, { rootMargin: '600px 0px' });
+  pageEls.forEach(p => io.observe(p.div));
+}
+
+function jump() {
+  const a = anns[wantAnn];
+  const n = a ? a.p + 1 : wantPage;
+  const entry = pageEls[Math.max(0, Math.min(pageEls.length - 1, (n || 1) - 1))];
+  if (!entry) return;
+  if (wantAnn) showNote(wantAnn);
+  const bar = document.querySelector('.top').offsetHeight;
+  let top = entry.div.offsetTop - bar - 12;
+  const target = wantAnn ? entry.div.querySelector(`.hl[data-k="${CSS.escape(wantAnn)}"]`) : null;
+  if (target) top += Math.max(0, target.offsetTop - 80);
+  window.scrollTo({ top: Math.max(0, top) });
+  currentPage();
+}
+
+try {
+  pdf = await pdfjsLib.getDocument({ url: file }).promise;
+  await layout();
+  jump();
+} catch (e) {
+  pagesEl.innerHTML = `<p class="err">The PDF could not be shown here (${esc(e.message)}). ` +
+    `<a href="${esc(file)}">Open it directly</a>.</p>`;
+}
+document.getElementById('zin').addEventListener('click', async () => { scale = Math.min(3, scale * 1.2); await layout(); jump(); });
+document.getElementById('zout').addEventListener('click', async () => { scale = Math.max(0.5, scale / 1.2); await layout(); jump(); });
+let resizeTimer = null;
+window.addEventListener('resize', () => { clearTimeout(resizeTimer); resizeTimer = setTimeout(async () => { await layout(); jump(); }, 250); });
+</script>
+</body>
+</html>

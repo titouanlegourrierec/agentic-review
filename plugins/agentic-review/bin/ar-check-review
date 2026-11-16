@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Check the lead reviewer's 5-final/review.md against review.json and the citation map.
+
+Checks: (1) section markers <!-- section: <id> --> appear exactly once each, in the order of review.json
+`review_sections`; (2) every citation link [label](url) matches a row of 5-final/citation_map.tsv (a link is a
+citation when its label is in the map or looks like "Author, 2021" / "Author et al., 2021b"); (3) every pipe
+table has the same number of columns in each row; (4) when the code audit ran (4-checks/code/paper_code.jsonl),
+every link to a line of code on GitHub is pinned at a commit and comes from the code audit, and every cited paper
+with a `differs` verdict has at least one link into its repository, unless 5-final/lead_notes.md has the line
+"code-difference left out: <key> — <reason>". Also prints words per section and the number of distinct works
+cited. Writes nothing. Exit 1 when a check fails.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import re
+from collections import Counter
+
+import arlib
+
+MARKER = re.compile(r"<!--\s*section:\s*([A-Za-z0-9_.-]+)\s*-->")
+LINK = re.compile(r"\[([^\]]+)\]\((https?://(?:[^()\s]|\([^()\s]*\))+)\)")
+CITE_LIKE = re.compile(r"(?:1[89]|2[0-9])\d{2}[a-z]?$")
+PIPE = re.compile(r"(?<!\\)\|")
+CODE_LINK = re.compile(r"^https://github\.com/([^/\s]+)/([^/\s]+)/blob/([^/\s]+)/[^\s#]+(?:#L\d+(?:-L\d+)?)?$")
+SHA = re.compile(r"^[0-9a-f]{7,40}$")
+LEFT_OUT = re.compile(r"code-difference left out:\s*`?([A-Za-z0-9_.-]+)`?", re.I)
+
+
+def code_link_problems(rdir, links, cmap):
+    """Check (4): links to lines of code against the code audit. Returns (problems, number of code links)."""
+    code_dir = rdir / "4-checks" / "code"
+    claims = arlib.load_jsonl(code_dir / "paper_code.jsonl", missing_ok=True)
+    if not claims:
+        return [], sum(1 for _, u in links if CODE_LINK.match(u))
+    audit_text = (
+        (code_dir / "repo_audit.jsonl").read_text(encoding="utf-8") if (code_dir / "repo_audit.jsonl").exists() else ""
+    )
+    known = {str(c.get("code_permalink") or "").strip() for c in claims}
+    problems, code_links = [], []
+    for _lab, url in links:
+        m = CODE_LINK.match(url)
+        if not m:
+            continue
+        code_links.append(url)
+        if not SHA.match(m.group(3)):
+            problems.append(f"code link not pinned at a commit: {url}")
+        elif url not in known and url not in audit_text:
+            problems.append(f"code link not found in paper_code.jsonl or repo_audit.jsonl: {url}")
+    key_of_url = {row.get("url"): k for k, row in cmap.items()}
+    cited_keys = {key_of_url[u] for _, u in links if u in key_of_url}
+    notes = rdir / "5-final" / "lead_notes.md"
+    left_out = set(LEFT_OUT.findall(notes.read_text(encoding="utf-8"))) if notes.exists() else set()
+    repos = {}
+    for c in claims:
+        if str(c.get("verdict") or "").strip().lower() != "differs":
+            continue
+        m = CODE_LINK.match(str(c.get("code_permalink") or "").strip())
+        if m:
+            repos.setdefault(c.get("paper_key"), set()).add(f"{m.group(1)}/{m.group(2)}".lower())
+        else:
+            repos.setdefault(c.get("paper_key"), set())
+    linked_repos = {f"{m.group(1)}/{m.group(2)}".lower() for m in map(CODE_LINK.match, code_links) if m}
+    for key in sorted(k for k in repos if k in cited_keys and k not in left_out):
+        if not repos[key] & linked_repos:
+            problems.append(
+                f"{key} is cited and has `differs` verdicts in paper_code.jsonl, but the review links to "
+                f'none of its code; add a "Reviewer:" note linked to a code_permalink, or the line '
+                f'"code-difference left out: {key} — <reason>" in lead_notes.md'
+            )
+    return problems, len(code_links)
+
+
+def strip_code(line):
+    return re.sub(r"`[^`]*`", "", line)
+
+
+def table_problems(body, where):
+    out = []
+    table, tables = [], []
+    for line in [*body.splitlines(), ""]:
+        if line.strip().startswith("|"):
+            table.append(line)
+        elif table:
+            tables.append(table)
+            table = []
+    for t in tables:
+        widths = Counter(len(PIPE.findall(strip_code(row.strip().rstrip("|")))) for row in t)
+        if len(widths) > 1:
+            out.append(f'{where}: table with inconsistent column counts {dict(widths)} starting "{t[0].strip()[:60]}"')
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-check-review", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("--file", default=arlib.REVIEW_MD, help=f"review file (default {arlib.REVIEW_MD})")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    path = arlib.resolve(rdir, args.file)
+    if not path.exists():
+        print(f"missing {args.file}")
+        return 1
+    text = path.read_text(encoding="utf-8")
+    problems = []
+
+    expected = [str(s.get("id")) for s in (review.get("review_sections") or []) if isinstance(s, dict)]
+    marks = MARKER.findall(text)
+    if not expected:
+        problems.append("review.json has no review_sections")
+    elif marks != expected:
+        missing = [m for m in expected if m not in marks]
+        extra = [m for m in marks if m not in expected]
+        dupes = sorted(m for m, n in Counter(marks).items() if n > 1)
+        detail = []
+        if missing:
+            detail.append(f"missing {missing}")
+        if extra:
+            detail.append(f"unexpected {extra}")
+        if dupes:
+            detail.append(f"repeated {dupes}")
+        if not detail:
+            detail.append(f"out of order: found {marks}")
+        problems.append("section markers: " + "; ".join(detail) + f" (expected {expected})")
+
+    cmap = arlib.load_citemap(rdir)
+    if not cmap:
+        problems.append(f"missing or empty {arlib.CITEMAP}")
+    by_label = {row.get("label"): row for row in cmap.values()}
+    by_url = {}
+    for row in cmap.values():
+        by_url.setdefault(row.get("url"), []).append(row.get("label"))
+    links = LINK.findall(text)
+    wrong_url, unknown, cited, other = [], [], set(), 0
+    for lab, url in links:
+        lab = " ".join(lab.split())
+        if lab in by_label:
+            if by_label[lab].get("url") != url:
+                wrong_url.append(f"[{lab}]({url}) -> map has {by_label[lab].get('url')}")
+            else:
+                cited.add(lab)
+        elif CITE_LIKE.search(lab):
+            hint = f" (the map labels this URL {by_url[url]})" if url in by_url else ""
+            unknown.append(f"[{lab}]({url}){hint}")
+        else:
+            other += 1
+    if wrong_url:
+        problems.append(
+            f"{len(wrong_url)} citation links whose URL differs from the map: "
+            + "; ".join(wrong_url[:8])
+            + (" ..." if len(wrong_url) > 8 else "")
+        )
+    if unknown:
+        uniq = sorted(set(unknown))
+        problems.append(
+            f"{len(uniq)} citation-like labels not in the map: "
+            + "; ".join(uniq[:10])
+            + (" ..." if len(uniq) > 10 else "")
+        )
+
+    code_problems, n_code = code_link_problems(rdir, links, cmap)
+    problems.extend(code_problems)
+
+    parts = MARKER.split(text)
+    sections = [("(before first marker)", parts[0])] if parts[0].strip() else []
+    sections += [(parts[i], parts[i + 1]) for i in range(1, len(parts) - 1, 2)]
+    for sid, body in sections:
+        problems.extend(table_problems(body, sid))
+
+    words = {sid: len(re.sub(r"\(https?://[^)]+\)", "", body).split()) for sid, body in sections}
+    print(f"file: {arlib.rel(rdir, path)}")
+    print("sections: " + " ".join(marks))
+    print("words per section: " + ", ".join(f"{k} {v}" for k, v in words.items()) + f" | total {sum(words.values())}")
+    print(
+        f"citation links: {len(links) - other} ({len(cited)} distinct works) | other links: {other} "
+        f"(links to code: {n_code}) | "
+        f'"(unverified)": {text.count("(unverified)")}'
+    )
+    if problems:
+        print("PROBLEMS:")
+        for p in problems:
+            print(f"  - {p}")
+        return 1
+    print("OK: no problems found")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

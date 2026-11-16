@@ -1,0 +1,462 @@
+#!/usr/bin/env python3
+"""Read and update <review>/state.json: phases, checkpoints, agents (the only writer of state.json)."""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import contextlib
+import json
+import os
+
+import arlib
+
+PHASES = ["0", "1", "2", "3", "3b", "4", "5", "6", "7"]
+PHASE_NAMES = {
+    "0": "protocol",
+    "1": "discovery",
+    "2": "full texts",
+    "3": "analysis and checks",
+    "3b": "code audit",
+    "4": "lead review",
+    "5": "Zotero annotation",
+    "6": "late full texts",
+    "7": "reading edition",
+}
+PHASE_STATUS = ["pending", "running", "done", "skipped"]
+# checkpoint -> (phase it belongs to, "after" = between that phase and the next, "inside" = before it can end)
+CHECKPOINTS = {"1": ("0", "after"), "2": ("2", "inside"), "3": ("5", "inside"), "4": ("6", "inside")}
+CHECKPOINT_TEXT = {
+    "1": "after Phase 0 (protocol)",
+    "2": "inside Phase 2 (full texts)",
+    "3": "inside Phase 5 (annotation pilot)",
+    "4": "at Phase 6 (late full texts)",
+}
+ZOTERO_PHASES = {"2", "5", "6"}
+# Phases run later, on the user's command (/agentic-review:add-pdfs), as often as needed: they never hold up a later
+# phase, `next` passes over them while they are pending, and their checkpoint gates only the phase itself.
+DEFERRED_PHASES = {"6"}
+CODE_PHASES = {"3b"}
+
+EPILOG = """subcommands:
+  init [--force]                        create state.json (phase 0, checkpoints 1-4 pending)
+  show [--json]                         short summary: phases, checkpoints, agents, what is next
+  phase <id> <status> [--note TEXT]     id: 0 1 2 3 3b 4 5 6 7; status: pending running done skipped
+                                        (records the status; warns, but does not refuse, when a checkpoint
+                                        is unapproved or the phase is disabled: `require` is the gate)
+  checkpoint <n> approve|reset [--note TEXT] [--auto]
+                                        --auto: approved by the orchestrator in autonomous mode; refused unless
+                                        review.json "autonomy" is "autonomous" (set by the user at setup)
+  agent start|done|failed <id> <role>
+  require <n>                           exit 1 unless checkpoint n is approved
+  next [--json]                         the next phase to run (honours checkpoints, zotero.enabled,
+                                        code_audit.enabled; passes over Phase 6 while it is pending: it runs
+                                        later, with /agentic-review:add-pdfs)
+exit codes: 0 fine, 1 not approved / state.json missing or exists, 2 bad usage"""
+
+
+def state_path(rdir):
+    return Path(rdir) / "state.json"
+
+
+@contextlib.contextmanager
+def locked(rdir):
+    """Serialise concurrent ar-state calls with an advisory lock on the review folder (POSIX; no-op elsewhere)."""
+    try:
+        import fcntl
+    except ImportError:
+        yield
+        return
+    fd = None
+    try:
+        fd = os.open(str(rdir), os.O_RDONLY)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        if fd is not None:
+            os.close(fd)
+        fd = None
+    try:
+        yield
+    finally:
+        if fd is not None:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+
+
+def new_state():
+    at = arlib.now_iso()
+    return {
+        "version": 1,
+        "phase": 0,
+        "phases": {p: {"status": "pending"} for p in PHASES},
+        "checkpoints": {c: {"status": "pending"} for c in CHECKPOINTS},
+        "agents": [],
+        "log": [{"at": at, "event": "state initialised"}],
+    }
+
+
+def load_state(rdir):
+    p = state_path(rdir)
+    if not p.exists():
+        arlib.die(f'error: {p} not found; run: ar-state "{rdir}" init', 1)
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as e:
+        arlib.die(f"error: {p} is not valid JSON ({e})", 1)
+    st.setdefault("phases", {})
+    for ph in PHASES:
+        st["phases"].setdefault(ph, {"status": "pending"})
+    st.setdefault("checkpoints", {})
+    for c in CHECKPOINTS:
+        st["checkpoints"].setdefault(c, {"status": "pending"})
+    st.setdefault("agents", [])
+    st.setdefault("log", [])
+    return st
+
+
+def save_state(rdir, st):
+    arlib.atomic_write_json(state_path(rdir), st)
+
+
+def log(st, event):
+    st["log"].append({"at": arlib.now_iso(), "event": event})
+
+
+def phase_value(ph):
+    return int(ph) if ph.isdigit() else ph
+
+
+def disabled_reason(ph, review):
+    if ph in ZOTERO_PHASES and not (review.get("zotero") or {}).get("enabled", True):
+        return "zotero.enabled is false"
+    if ph in CODE_PHASES and not (review.get("code_audit") or {}).get("enabled", False):
+        return "code_audit.enabled is false"
+    return None
+
+
+def effective(st, ph, review):
+    s = st["phases"].get(ph, {}).get("status", "pending")
+    if s in ("done", "skipped"):
+        return s
+    if disabled_reason(ph, review):
+        return "disabled"
+    return s
+
+
+def blocking_checkpoints(st, target, mode, review):
+    """Unapproved checkpoints that block starting (mode 'start') or finishing (mode 'finish') a phase."""
+    out = []
+    t = PHASES.index(target)
+    for c, (host, kind) in CHECKPOINTS.items():
+        if effective(st, host, review) in ("skipped", "disabled"):
+            continue
+        h = PHASES.index(host)
+        if host in DEFERRED_PHASES and t != h:
+            continue
+        needed = t > h or (t == h and kind == "inside" and mode == "finish")
+        if needed and st["checkpoints"][c].get("status") != "approved":
+            out.append(c)
+    return out
+
+
+def compute_next(st, review):
+    deferred_open = []
+    for ph in PHASES:
+        eff = effective(st, ph, review)
+        if eff in ("done", "skipped", "disabled"):
+            continue
+        if ph in DEFERRED_PHASES and eff == "pending":
+            deferred_open.append(ph)
+            continue
+        blocking = blocking_checkpoints(st, ph, "start", review)
+        if blocking:
+            c = blocking[0]
+            return {
+                "next": f"checkpoint {c}",
+                "phase": ph,
+                "status": eff,
+                "blocked_by": c,
+                "text": f"checkpoint {c} ({CHECKPOINT_TEXT[c]}) must be approved by the user before phase {ph} "
+                f"({PHASE_NAMES[ph]}); then run: ar-state <dir> checkpoint {c} approve",
+            }
+        inside = [
+            c
+            for c, (host, kind) in CHECKPOINTS.items()
+            if host == ph and kind == "inside" and st["checkpoints"][c].get("status") != "approved"
+        ]
+        text = f"{ph} {PHASE_NAMES[ph]} ({eff})"
+        if eff == "running" and inside:
+            text += f"; checkpoint {inside[0]} pending inside this phase"
+        return {"next": ph, "phase": ph, "status": eff, "blocked_by": None, "text": text}
+    if deferred_open:
+        ph = deferred_open[0]
+        return {
+            "next": "done",
+            "phase": None,
+            "status": "done",
+            "blocked_by": None,
+            "open": deferred_open,
+            "text": f"done: every phase is done or skipped; phase {ph} ({PHASE_NAMES[ph]}) stays open: run "
+            f"/agentic-review:add-pdfs after adding PDFs to Zotero",
+        }
+    return {
+        "next": "done",
+        "phase": None,
+        "status": "done",
+        "blocked_by": None,
+        "text": "done: every phase is done or skipped",
+    }
+
+
+# --------------------------------------------------------------------------- subcommands
+
+
+def cmd_init(rdir, args, review):
+    p = state_path(rdir)
+    if p.exists() and not args.force:
+        arlib.die(f"error: {p} already exists (use --force to start over)", 1)
+    st = new_state()
+    for ph in PHASES:
+        reason = disabled_reason(ph, review)
+        if reason:
+            st["phases"][ph]["note"] = f"will be skipped: {reason}"
+    save_state(rdir, st)
+    print("state.json created: phase 0 pending, checkpoints 1-4 pending")
+    return 0
+
+
+def cmd_show(rdir, args, review):
+    st = load_state(rdir)
+    nxt = compute_next(st, review)
+    if args.json:
+        out = dict(st)
+        out["next"] = nxt
+        out["effective"] = {ph: effective(st, ph, review) for ph in PHASES}
+        print(json.dumps(out, ensure_ascii=False, indent=2))
+        return 0
+    title = review.get("topic") or Path(rdir).name
+    cur = str(st.get("phase", 0))
+    print(f"Review: {title}")
+    print(f"Current phase: {cur} {PHASE_NAMES.get(cur, '?')} ({effective(st, cur, review) if cur in PHASES else '?'})")
+    parts = []
+    for ph in PHASES:
+        eff = effective(st, ph, review)
+        at = st["phases"][ph].get("at")
+        parts.append(f"{ph} {eff}" + (f" {at}" if at and eff in ("done", "running") else ""))
+    print("Phases: " + " | ".join(parts))
+    cps = []
+    for c, (host, _kind) in CHECKPOINTS.items():
+        cp = st["checkpoints"][c]
+        why = disabled_reason(host, review)
+        if why and cp.get("status") != "approved":
+            cps.append(f"{c} not needed ({why})")
+            continue
+        s = f"{c} {cp.get('status', 'pending')}"
+        if cp.get("status") == "approved" and cp.get("by") == "autonomous":
+            s += " (autonomous)"
+        if cp.get("status") == "approved" and cp.get("at"):
+            s += f" {cp['at']}"
+        cps.append(s)
+    print("Checkpoints: " + " | ".join(cps))
+    agents = st["agents"]
+    running = [a for a in agents if a.get("status") == "running"]
+    done = [a for a in agents if a.get("status") == "done"]
+    failed = [a for a in agents if a.get("status") == "failed"]
+    print(f"Agents: {len(running)} running, {len(done)} done, {len(failed)} failed")
+    for a in running:
+        print(f"  running: {a.get('id')} ({a.get('role')}) since {a.get('started')}")
+    for a in failed:
+        print(f"  failed:  {a.get('id')} ({a.get('role')}) at {a.get('finished')}")
+    print(f"Next: {nxt['text']}")
+    return 0
+
+
+def cmd_phase(rdir, args, review):
+    ph, status = args.id, args.status
+    if ph not in PHASES:
+        arlib.die(f"error: unknown phase {ph!r} (expected one of {', '.join(PHASES)})", 2)
+    if status not in PHASE_STATUS:
+        arlib.die(f"error: unknown status {status!r} (expected one of {', '.join(PHASE_STATUS)})", 2)
+    with locked(rdir):
+        st = load_state(rdir)
+        warnings = []
+        if status in ("running", "done"):
+            reason = disabled_reason(ph, review)
+            if reason:
+                warnings.append(f"phase {ph} is disabled ({reason})")
+            for c in blocking_checkpoints(st, ph, "start" if status == "running" else "finish", review):
+                warnings.append(
+                    f"checkpoint {c} ({CHECKPOINT_TEXT[c]}) is not approved; `ar-state <dir> require "
+                    f"{c}` gates this phase"
+                )
+            before = [
+                p
+                for p in PHASES[: PHASES.index(ph)]
+                if p not in DEFERRED_PHASES and effective(st, p, review) not in ("done", "skipped", "disabled")
+            ]
+            if before:
+                warnings.append(f"earlier phases not finished: {', '.join(before)}")
+        if not args.force:
+            for w in warnings:
+                print(f"warning: {w}", file=sys.stderr)
+        old = st["phases"][ph].get("status", "pending")
+        entry = {"status": status, "at": arlib.now_iso()}
+        if args.note:
+            entry["note"] = args.note
+        st["phases"][ph] = entry
+        if status in ("running", "done"):
+            st["phase"] = phase_value(ph)
+        log(st, f"phase {ph} {old} -> {status}" + (f" ({args.note})" if args.note else ""))
+        save_state(rdir, st)
+    print(f"phase {ph} ({PHASE_NAMES[ph]}): {old} -> {status}")
+    return 0
+
+
+def cmd_checkpoint(rdir, args, review):
+    c, action = args.n, args.action
+    if c not in CHECKPOINTS:
+        arlib.die(f"error: unknown checkpoint {c!r} (expected 1, 2, 3 or 4)", 2)
+    with locked(rdir):
+        st = load_state(rdir)
+        if action == "approve":
+            entry = {"status": "approved", "at": arlib.now_iso()}
+            if args.auto:
+                if str(review.get("autonomy") or "interactive").lower() != "autonomous":
+                    arlib.die(
+                        f'error: --auto needs review.json "autonomy": "autonomous" (set by the user when the '
+                        f"review was set up); ask the user to approve checkpoint {c}",
+                        1,
+                    )
+                entry["by"] = "autonomous"
+        else:
+            entry = {"status": "pending", "at": arlib.now_iso()}
+        if args.note:
+            entry["note"] = args.note
+        st["checkpoints"][c] = entry
+        log(
+            st,
+            f"checkpoint {c} {'approved' if action == 'approve' else 'reset'}"
+            + (" (autonomous)" if entry.get("by") == "autonomous" else "")
+            + (f" ({args.note})" if args.note else ""),
+        )
+        save_state(rdir, st)
+    print(
+        f"checkpoint {c} ({CHECKPOINT_TEXT[c]}): {entry['status']}"
+        + (" by the orchestrator (autonomous mode)" if entry.get("by") == "autonomous" else "")
+    )
+    return 0
+
+
+def cmd_agent(rdir, args, review):
+    action, aid, role = args.action, args.id, args.role
+    with locked(rdir):
+        st = load_state(rdir)
+        at = arlib.now_iso()
+        match = [a for a in st["agents"] if a.get("id") == aid]
+        cur = match[-1] if match else None
+        if action == "start":
+            if cur is not None and cur.get("status") == "running":
+                print(
+                    f"warning: agent {aid} was already running since {cur.get('started')}; restarted", file=sys.stderr
+                )
+                cur.update({"role": role, "started": at})
+            else:
+                cur = {"id": aid, "role": role, "status": "running", "started": at}
+                st["agents"].append(cur)
+        else:
+            if cur is None:
+                print(f"warning: agent {aid} had no start entry", file=sys.stderr)
+                cur = {"id": aid, "role": role, "started": None}
+                st["agents"].append(cur)
+            cur["status"] = "done" if action == "done" else "failed"
+            cur["finished"] = at
+            cur["role"] = role or cur.get("role")
+        log(st, f"agent {aid} ({role}) {action}")
+        save_state(rdir, st)
+    print(f"agent {aid} ({role}): {cur['status']}")
+    return 0
+
+
+def cmd_require(rdir, args, review):
+    c = args.n
+    if c not in CHECKPOINTS:
+        arlib.die(f"error: unknown checkpoint {c!r} (expected 1, 2, 3 or 4)", 2)
+    st = load_state(rdir)
+    cp = st["checkpoints"][c]
+    if cp.get("status") == "approved":
+        print(f"checkpoint {c} approved ({cp.get('at')})")
+        return 0
+    why = disabled_reason(CHECKPOINTS[c][0], review)
+    if why:
+        print(f"checkpoint {c} not needed: its phase is disabled ({why})")
+        return 0
+    print(
+        f"STOP: checkpoint {c} ({CHECKPOINT_TEXT[c]}) is not approved (status: {cp.get('status', 'pending')}). "
+        f'Ask the user; after they approve, run: ar-state "{rdir}" checkpoint {c} approve'
+    )
+    return 1
+
+
+def cmd_next(rdir, args, review):
+    st = load_state(rdir)
+    nxt = compute_next(st, review)
+    if args.json:
+        print(json.dumps(nxt, ensure_ascii=False))
+    else:
+        print(nxt["text"] if nxt["next"] != "done" or nxt.get("open") else "done")
+    return 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-state", description=__doc__, epilog=EPILOG, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    sub = ap.add_subparsers(dest="cmd", metavar="subcommand")
+    p = sub.add_parser("init", help="create state.json")
+    p.add_argument("--force", action="store_true", help="overwrite an existing state.json")
+    p = sub.add_parser("show", help="short summary")
+    p.add_argument("--json", action="store_true")
+    p = sub.add_parser("phase", help="set a phase status")
+    p.add_argument("id")
+    p.add_argument("status")
+    p.add_argument("--note")
+    p.add_argument("--force", action="store_true", help="do not print warnings")
+    p = sub.add_parser("checkpoint", help="approve or reset a checkpoint")
+    p.add_argument("n")
+    p.add_argument("action", choices=["approve", "reset"])
+    p.add_argument("--note")
+    p.add_argument(
+        "--auto",
+        action="store_true",
+        help="approved by the orchestrator (only when review.json autonomy is autonomous)",
+    )
+    p = sub.add_parser("agent", help="record an agent start, end or failure")
+    p.add_argument("action", choices=["start", "done", "failed"])
+    p.add_argument("id")
+    p.add_argument("role")
+    p = sub.add_parser("require", help="exit 1 unless checkpoint n is approved")
+    p.add_argument("n")
+    p = sub.add_parser("next", help="the next phase to run")
+    p.add_argument("--json", action="store_true")
+    args = ap.parse_args(argv)
+    if not args.cmd:
+        ap.print_usage(sys.stderr)
+        return 2
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    return {
+        "init": cmd_init,
+        "show": cmd_show,
+        "phase": cmd_phase,
+        "checkpoint": cmd_checkpoint,
+        "agent": cmd_agent,
+        "require": cmd_require,
+        "next": cmd_next,
+    }[args.cmd](rdir, args, review)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,64 @@
+
+/* figures (added only when the review has figures). Colours: the validated categorical order (blue, orange, aqua,
+   yellow, magenta, green, violet, red), one blue ramp for magnitude; dark mode uses its own steps of the same hues. */
+:root {
+  --fg-c1: #2a78d6; --fg-c2: #eb6834; --fg-c3: #1baf7a; --fg-c4: #eda100;
+  --fg-c5: #e87ba4; --fg-c6: #008300; --fg-c7: #6250d6; --fg-c8: #e34948;
+  --fg-q1: #cde2fb; --fg-q2: #9ec5f4; --fg-q3: #6da7ec; --fg-q4: #3987e5; --fg-q5: #1c5cab;
+  --fg-on-q1: #0b0b0b; --fg-on-q2: #0b0b0b; --fg-on-q3: #0b0b0b; --fg-on-q4: #0b0b0b; --fg-on-q5: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --fg-c1: #3987e5; --fg-c2: #d95926; --fg-c3: #199e70; --fg-c4: #c98500;
+    --fg-c5: #d55181; --fg-c6: #008300; --fg-c7: #9085e9; --fg-c8: #e66767;
+    --fg-q1: #0d366b; --fg-q2: #184f95; --fg-q3: #256abf; --fg-q4: #3987e5; --fg-q5: #86b6ef;
+    --fg-on-q1: #ffffff; --fg-on-q2: #ffffff; --fg-on-q3: #ffffff; --fg-on-q4: #0b0b0b; --fg-on-q5: #0b0b0b;
+  }
+}
+:root[data-theme="dark"] {
+  --fg-c1: #3987e5; --fg-c2: #d95926; --fg-c3: #199e70; --fg-c4: #c98500;
+  --fg-c5: #d55181; --fg-c6: #008300; --fg-c7: #9085e9; --fg-c8: #e66767;
+  --fg-q1: #0d366b; --fg-q2: #184f95; --fg-q3: #256abf; --fg-q4: #3987e5; --fg-q5: #86b6ef;
+  --fg-on-q1: #ffffff; --fg-on-q2: #ffffff; --fg-on-q3: #ffffff; --fg-on-q4: #0b0b0b; --fg-on-q5: #0b0b0b;
+}
+.fg-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
+figure.fig svg { font-family: var(--sans); overflow: visible; }
+/* the page's dark-mode card was for hand-coloured figures; these follow the theme */
+:root[data-theme="dark"] figure.fig svg { background: none; padding: 0; border-radius: 0; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) figure.fig svg { background: none; padding: 0; border-radius: 0; }
+}
+.fig svg text { fill: var(--ink); }
+.fig svg .fill-1 { fill: var(--fg-c1); } .fig svg .fill-2 { fill: var(--fg-c2); } .fig svg .fill-3 { fill: var(--fg-c3); }
+.fig svg .fill-4 { fill: var(--fg-c4); } .fig svg .fill-5 { fill: var(--fg-c5); } .fig svg .fill-6 { fill: var(--fg-c6); }
+.fig svg .fill-7 { fill: var(--fg-c7); } .fig svg .fill-8 { fill: var(--fg-c8); }
+.fig svg .fill-q1 { fill: var(--fg-q1); } .fig svg .fill-q2 { fill: var(--fg-q2); } .fig svg .fill-q3 { fill: var(--fg-q3); }
+.fig svg .fill-q4 { fill: var(--fg-q4); } .fig svg .fill-q5 { fill: var(--fg-q5); }
+.fig svg .fill-ink { fill: var(--ink); } .fig svg .fill-ink2 { fill: var(--ink2); } .fig svg .fill-muted { fill: var(--muted); }
+.fig svg .fill-grid { fill: var(--rule); } .fig svg .fill-axis { fill: var(--axis); } .fig svg .fill-wash { fill: var(--accent-wash); }
+.fig svg .fill-panel { fill: var(--wash); } .fig svg .fill-surface { fill: var(--paper); } .fig svg .fill-none { fill: none; } .fig svg .fill-hatch { fill: url(#fg-hatch); }
+.fig svg .line-1 { stroke: var(--fg-c1); } .fig svg .line-2 { stroke: var(--fg-c2); } .fig svg .line-3 { stroke: var(--fg-c3); }
+.fig svg .line-4 { stroke: var(--fg-c4); } .fig svg .line-5 { stroke: var(--fg-c5); } .fig svg .line-6 { stroke: var(--fg-c6); }
+.fig svg .line-7 { stroke: var(--fg-c7); } .fig svg .line-8 { stroke: var(--fg-c8); }
+.fig svg .line-ink { stroke: var(--ink); } .fig svg .line-ink2 { stroke: var(--ink2); } .fig svg .line-muted { stroke: var(--muted); }
+.fig svg .line-grid { stroke: var(--rule); } .fig svg .line-axis { stroke: var(--axis); } .fig svg .line-surface { stroke: var(--paper); }
+.fig svg line, .fig svg polyline { fill: none; }
+.fig svg .on-dark { fill: #ffffff; } .fig svg .on-light { fill: #0b0b0b; }
+.fig svg .on-q1 { fill: var(--fg-on-q1); } .fig svg .on-q2 { fill: var(--fg-on-q2); } .fig svg .on-q3 { fill: var(--fg-on-q3); }
+.fig svg .on-q4 { fill: var(--fg-on-q4); } .fig svg .on-q5 { fill: var(--fg-on-q5); }
+.fig svg .halo { stroke: var(--paper); stroke-width: 3px; paint-order: stroke; stroke-linejoin: round; }
+.fig svg .cap { letter-spacing: .06em; }
+.fig svg .hit { fill: var(--accent-wash); opacity: 0; transition: opacity .12s; }
+/* the page's older figure rule paints hovered rows light blue; these win in both themes */
+.fig svg a:hover > rect.hit, .fig svg a:focus-visible > rect.hit, .fig svg g.row:hover > rect.hit {
+  opacity: 1; fill: var(--accent-wash); }
+.fig svg a:hover > circle.hit { opacity: .9; }
+.fig svg a { cursor: pointer; }
+.fig svg a:focus-visible { outline: none; }
+.fig svg a:hover .dot { stroke: var(--ink); }
+details.figdata { margin-top: 10px; font: 13px/1.5 var(--sans); color: var(--ink2); }
+details.figdata > summary { cursor: pointer; color: var(--muted); width: max-content; }
+details.figdata > summary:hover { color: var(--ink); }
+details.figdata table { font-size: 13px; margin-top: 8px; }
+details.figdata .fd-sub { color: var(--muted); font-size: 12px; }
+@media print { details.figdata { display: none; } }

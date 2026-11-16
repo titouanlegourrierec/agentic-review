@@ -1,0 +1,50 @@
+{
+  "description": "agentic-review: enforces who reads what and where each agent may write, blocks network requests that carry an email address and any Zotero tool that deletes or removes, validates the JSONL files an agent wrote before it finishes, and shows the review's status when a session starts in a review folder. Every hook exits at once outside a review folder (one holding review.json and state.json).",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/ar_hook.py\" session-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob|Bash|WebFetch|mcp__.*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/ar_hook.py\" pre-tool",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/ar_hook.py\" subagent-start",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/ar_hook.py\" subagent-stop",
+            "timeout": 60
+          }
+        ]
+      }
+    ]
+  }
+}

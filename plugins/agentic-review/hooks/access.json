@@ -1,0 +1,55 @@
+{
+  "_comment": "Who reads what (CONTRACT.md §6). Paths are relative to the review folder. A review may override this file with .agentic-review/access.json.",
+  "discovery": {
+    "deny_read": ["2-merged", "3-analysis", "4-checks", "5-final"],
+    "write": ["1-discovery", ".cache", ".scripts"]
+  },
+  "synthesis": {
+    "deny_read": ["4-checks", "5-final"],
+    "write": ["3-analysis", ".cache", ".scripts"]
+  },
+  "comparison": {
+    "deny_read": ["4-checks", "5-final", "3-analysis/synthesis.md"],
+    "write": ["3-analysis", ".cache", ".scripts"]
+  },
+  "rigor-checker": {
+    "deny_read": ["3-analysis", "5-final"],
+    "write": ["4-checks", ".cache", ".scripts"]
+  },
+  "omissions-checker": {
+    "deny_read": ["3-analysis", "5-final"],
+    "write": ["4-checks", ".cache", ".scripts"]
+  },
+  "claims-checker": {
+    "deny_read": ["2-merged/merged.jsonl", "5-final"],
+    "write": ["4-checks", ".cache", ".scripts"]
+  },
+  "code-finder": {
+    "deny_read": ["3-analysis", "5-final"],
+    "write": ["4-checks/code", ".cache", ".scripts"]
+  },
+  "repo-auditor": {
+    "deny_read": ["3-analysis", "5-final"],
+    "write": ["4-checks/code", ".cache", ".scripts"]
+  },
+  "paper-code-checker": {
+    "deny_read": ["5-final"],
+    "write": ["4-checks/code", ".cache", ".scripts"]
+  },
+  "lead-reviewer": {
+    "deny_read": [],
+    "write": ["5-final", ".scripts"]
+  },
+  "annotator": {
+    "deny_read": ["3-analysis", "4-checks"],
+    "write": ["6-late", ".scripts"]
+  },
+  "late-pdf-checker": {
+    "deny_read": ["3-analysis", "4-checks"],
+    "write": ["6-late", ".scripts"]
+  },
+  "figure-designer": {
+    "deny_read": [],
+    "write": ["5-final/figures", ".scripts"]
+  }
+}

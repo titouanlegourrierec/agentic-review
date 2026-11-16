@@ -1,0 +1,253 @@
+#!/usr/bin/env python3
+"""Merge the discovery agents' records into one deduplicated file.
+
+Reads 1-discovery/<ID>_records.jsonl; writes 2-merged/merged.jsonl and 2-merged/merge_report.md.
+Duplicates are found by DOI, arXiv id, or near-identical title (similarity >= 0.93, accents folded). A title match
+never joins records whose DOIs or arXiv ids differ, or whose titles differ by a number or Roman numeral ('2D' / '3D',
+'Part I' / 'Part II'); without a shared identifier it also needs the same first author and years at most one apart.
+Similar titles that were kept apart are listed in the report for the orchestrator to check. Within a group the record
+with the deepest evidence, then the highest confidence, then the most filled fields is the base; empty fields
+are filled from the others; free-text fields that differ are concatenated as "base || [ID] other"; conflicting
+tier, family, year, DOI, arXiv id or venue are listed in `merge_notes`. Each merged record gets `found_by`.
+DOI and arXiv id are normalised (no URL prefix, lower-case DOI, no arXiv version). Keys collide -> suffix b, c.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+from collections import Counter
+
+import arlib
+
+TITLE_SIM = 0.93
+CONFLICT_FIELDS = ["tier", "family", "year", "doi", "arxiv_id", "venue"]
+BASE_CONCAT = ["setting", "datasets", "baselines", "metrics", "key_results", "limitations"]
+
+
+def concat_fields(schema, review):
+    """Free-text fields concatenated on merge: review.json merge.concat_fields, else the base free-text fields
+    plus every domain string field of schema.json that has no enum."""
+    explicit = (review.get("merge") or {}).get("concat_fields")
+    if explicit:
+        return set(explicit)
+    props = schema.get("properties") or {}
+    out = set(BASE_CONCAT)
+    for f in arlib.domain_fields(schema):
+        p = props.get(f) or {}
+        t = p.get("type")
+        types = t if isinstance(t, list) else [t]
+        if "string" in types and "enum" not in p and "pattern" not in p:
+            out.add(f)
+    return out
+
+
+def score(r, fields):
+    filled = sum(0 if arlib.is_empty(r.get(f)) else 1 for f in fields)
+    return (arlib.DEPTH_RANK.get(r.get("evidence_depth"), 0), arlib.CONF_RANK.get(r.get("confidence"), 0), filled)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-merge", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    schema, _ = arlib.load_schema(rdir)
+    concat = concat_fields(schema, review)
+
+    paths = sorted((rdir / "1-discovery").glob("*_records.jsonl"))
+    if not paths:
+        print("no 1-discovery/*_records.jsonl files found")
+        return 1
+    records, bad = [], []
+    for path in paths:
+        agent = path.name[: -len("_records.jsonl")]
+        for line, r, err in arlib.iter_jsonl(path):
+            if err:
+                bad.append(f"{agent} line {line}: {err}")
+                continue
+            if not isinstance(r, dict) or arlib.is_empty(r.get("title")):
+                bad.append(f"{agent} line {line}: not a record or no title")
+                continue
+            r = dict(r)
+            r["_agent"] = agent
+            r["doi"] = arlib.norm_doi(r.get("doi"))
+            r["arxiv_id"] = arlib.norm_arxiv(r.get("arxiv_id"))
+            if r["doi"] and r["doi"].startswith("10.48550/arxiv.") and not r["arxiv_id"]:
+                r["arxiv_id"] = r["doi"].split("arxiv.", 1)[1]
+            r["_nt"] = arlib.norm_text(r.get("title"))
+            records.append(r)
+
+    # field order: schema properties first, then any other field in first-seen order
+    fields = list((schema.get("properties") or {}).keys())
+    for r in records:
+        for f in r:
+            if not f.startswith("_") and f not in fields and f not in ("found_by", "merge_notes"):
+                fields.append(f)
+
+    n = len(records)
+    parent = list(range(n))
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    # Identifiers of each group, so that a chain of title matches cannot join two papers with different DOIs.
+    group_ids = [arlib.record_ids(r) for r in records]
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+            group_ids[ra] = group_ids[ra] | group_ids[rb]
+
+    def groups_compatible(a, b):
+        ia, ib = group_ids[find(a)], group_ids[find(b)]
+        for kind in ("doi", "arxiv"):
+            va, vb = {v for k, v in ia if k == kind}, {v for k, v in ib if k == kind}
+            if va and vb and not va & vb:
+                return False
+        return True
+
+    by_doi, by_arx = {}, {}
+    for i, r in enumerate(records):
+        if r["doi"] and not arlib.is_arxiv_doi(r["doi"]):
+            if r["doi"] in by_doi:
+                union(by_doi[r["doi"]], i)
+            else:
+                by_doi[r["doi"]] = i
+        if r["arxiv_id"]:
+            a = r["arxiv_id"].lower()
+            if a in by_arx:
+                union(by_arx[a], i)
+            else:
+                by_arx[a] = i
+    near_misses = []
+    for i in range(n):
+        for j in range(i + 1, n):
+            a, b = records[i], records[j]
+            if find(i) == find(j) or not arlib.similar(a["_nt"], b["_nt"], TITLE_SIM):
+                continue
+            if arlib.same_work_by_title(a, b, TITLE_SIM, a["_nt"], b["_nt"]) and groups_compatible(i, j):
+                union(i, j)
+            else:
+                near_misses.append(
+                    f"- {a['_agent']}:{a.get('key')} ({a.get('doi') or a.get('arxiv_id') or a.get('year')})"
+                    f" / {b['_agent']}:{b.get('key')} ({b.get('doi') or b.get('arxiv_id') or b.get('year')}):"
+                    f" {a.get('title')} / {b.get('title')}"
+                )
+
+    groups = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(records[i])
+
+    merged, merge_log, conflicts = [], [], []
+    for members in groups.values():
+        members.sort(key=lambda m: score(m, fields), reverse=True)
+        base = {f: members[0][f] for f in fields if f in members[0]}
+        notes = []
+        for other in members[1:]:
+            for f in fields:
+                ov, bv = other.get(f), base.get(f)
+                if arlib.is_empty(ov):
+                    continue
+                if arlib.is_empty(bv):
+                    base[f] = ov
+                elif (
+                    f in concat
+                    and isinstance(ov, str)
+                    and isinstance(bv, str)
+                    and arlib.norm_title(ov) != arlib.norm_title(bv)
+                    and ov not in bv
+                ):
+                    base[f] = f"{bv} || [{other['_agent']}] {ov}"
+                elif f == "flags" and isinstance(bv, list):
+                    base[f] = sorted(set(bv + (ov if isinstance(ov, list) else [ov])))
+                elif f in CONFLICT_FIELDS and str(ov).strip().lower() != str(bv).strip().lower():
+                    notes.append(f"{f} conflict: {bv!r} vs {ov!r} ({other['_agent']})")
+        base["found_by"] = sorted({m["_agent"] for m in members})
+        base["merge_notes"] = notes
+        base["_members"] = [f"{m['_agent']}:{m.get('key')}" for m in members]
+        merged.append(base)
+
+    taken = set()
+    for r in merged:
+        k = arlib.norm_key(r.get("key")) or arlib.make_key(r.get("first_author"), r.get("year"), r.get("title"))
+        r["key"] = arlib.unique_key(k, taken)
+    for r in merged:
+        if len(r["_members"]) > 1:
+            merge_log.append(f"- {r['key']}: {r.get('title')} <- {', '.join(r['_members'])}")
+        if r["merge_notes"]:
+            conflicts.append(f"- {r['key']}: " + "; ".join(r["merge_notes"]))
+        del r["_members"]
+
+    merged.sort(
+        key=lambda r: (
+            arlib.tier_order(arlib.map_tier(r.get("tier"), review)),
+            str(r.get("family")),
+            arlib.to_int(r.get("year")),
+            r["key"],
+        )
+    )
+    out_dir = rdir / "2-merged"
+    arlib.save_jsonl(out_dir / "merged.jsonl", merged)
+
+    tiers = Counter(r.get("tier") for r in merged)
+    fams = Counter(c for r in merged for c in arlib.family_codes(r.get("family")))
+    tier_names = sorted({str(r.get("tier")) for r in merged}, key=lambda t: arlib.tier_order(arlib.map_tier(t, review)))
+    by_tf = Counter((str(r.get("tier")), c) for r in merged for c in arlib.family_codes(r.get("family")))
+    fam_rows = ["| Family | " + " | ".join(tier_names) + " | all |", "|---|" + "---|" * (len(tier_names) + 1)]
+    for f in sorted(fams, key=arlib.natural_key):
+        fam_rows.append(f"| {f} | " + " | ".join(str(by_tf.get((t, f), 0)) for t in tier_names) + f" | {fams[f]} |")
+    years = Counter(r.get("year") for r in merged)
+    agents = Counter(a for r in merged for a in r["found_by"])
+    rep = [
+        "# Merge report",
+        "",
+        f"Input records: {n} from {len(paths)} files; unique after merge: {len(merged)}; "
+        f"parse problems: {len(bad)}; records with conflicts: {len(conflicts)}",
+        "",
+        "## By tier",
+        *[f"- {k}: {v}" for k, v in tiers.most_common()],
+        "",
+        "## By family and tier (a record with several families counts once in each)",
+        "",
+        *fam_rows,
+        "",
+        "## By year",
+        *[f"- {k}: {v}" for k, v in sorted(years.items(), key=lambda x: str(x[0]))],
+        "",
+        "## Records per agent (after merge)",
+        *[f"- {k}: {v}" for k, v in sorted(agents.items())],
+        "",
+        "## Merged duplicates",
+        *merge_log,
+        "",
+        "## Similar titles kept apart (different identifiers, numbers, authors or years: check them)",
+        *near_misses,
+        "",
+        "## Conflicts (kept the base value; see merge_notes)",
+        *conflicts,
+        "",
+        "## Parse problems",
+        *[f"- {b}" for b in bad],
+        "",
+    ]
+    arlib.atomic_write_text(out_dir / "merge_report.md", "\n".join(rep))
+    print(
+        f"input={n} unique={len(merged)} merged_groups={len(merge_log)} conflicts={len(conflicts)} "
+        f"similar_kept_apart={len(near_misses)} bad={len(bad)} tiers={dict(tiers)}"
+    )
+    print(f"wrote {arlib.rel(rdir, out_dir / 'merged.jsonl')}, {arlib.rel(rdir, out_dir / 'merge_report.md')}")
+    return 1 if bad else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

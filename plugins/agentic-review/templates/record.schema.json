@@ -1,0 +1,255 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "agentic-review record (base schema)",
+  "description": "One paper. Phase 0 copies this file to <review>/schema.json and may add domain fields; it never removes these.",
+  "type": "object",
+  "required": [
+    "key",
+    "title",
+    "year",
+    "tier",
+    "family",
+    "source_of_record",
+    "evidence_depth"
+  ],
+  "properties": {
+    "key": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]*[0-9]{4}[a-z0-9]*$",
+      "description": "family name of the first author + year of the first public version (preprint if earlier) + first significant title word, lowercase ASCII"
+    },
+    "title": {
+      "type": "string",
+      "minLength": 3
+    },
+    "authors": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "family name then initials, comma-separated, as listed: 'Smith J, van der Berg K, Li X'; more than 6 authors: first 6 + 'et al.'"
+    },
+    "first_author": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "family name only, e.g. 'van der Berg'"
+    },
+    "year": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "description": "year of the version this record describes"
+    },
+    "venue": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "venue_type": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "journal",
+        "conference",
+        "workshop",
+        "preprint",
+        "thesis",
+        "challenge-report",
+        "book-chapter",
+        "other",
+        null
+      ]
+    },
+    "doi": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^10\\.[0-9]{4,9}/\\S+$",
+      "description": "only if seen in a source this session"
+    },
+    "arxiv_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^([0-9]{4}\\.[0-9]{4,5}|[a-z-]+(\\.[A-Z]{2})?/[0-9]{7})(v[0-9]+)?$"
+    },
+    "source_of_record": {
+      "type": "string",
+      "pattern": "^https?://",
+      "description": "a URL opened, or an API response received, in this session"
+    },
+    "code": {
+      "type": [
+        "object",
+        "null"
+      ],
+      "description": "filled by the code agents; null until checked",
+      "properties": {
+        "url": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^https?://"
+        },
+        "seen_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "where the link was found: pdf, arxiv, project page, search"
+        },
+        "commit": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{7,40}$"
+        },
+        "checked": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "date checked, YYYY-MM-DD"
+        },
+        "license": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "weights": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "yes",
+            "no",
+            "promised",
+            "unknown",
+            null
+          ]
+        },
+        "framework": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "stars": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "GitHub stars when the code finder checked the repository"
+        },
+        "stars_at": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "date of the star count (YYYY-MM-DD)"
+        }
+      }
+    },
+    "tier": {
+      "type": "string",
+      "enum": [
+        "core",
+        "boundary",
+        "adjacent"
+      ]
+    },
+    "family": {
+      "type": "string",
+      "description": "one or more taxonomy ids, comma-separated"
+    },
+    "task": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "setting": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "datasets": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "baselines": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "metrics": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "one_line_claim": {
+      "type": [
+        "string",
+        "null"
+      ]
+    },
+    "key_results": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "quantitative where available, prefixed 'as reported:'"
+    },
+    "limitations": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "author-stated limits; own observations prefixed 'Reviewer:'"
+    },
+    "evidence_depth": {
+      "type": "string",
+      "enum": [
+        "abstract",
+        "full-text",
+        "secondary"
+      ]
+    },
+    "confidence": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "enum": [
+        "high",
+        "medium",
+        "low",
+        null
+      ]
+    },
+    "flags": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      }
+    }
+  }
+}

@@ -1,0 +1,16 @@
+{
+  "name": "agentic-review",
+  "metadata": {
+    "description": "Critical literature reviews run by a team of specialised Claude agents, with an annotated Zotero library and a reading edition."
+  },
+  "owner": {
+    "name": "Titouan Le Gourrierec"
+  },
+  "plugins": [
+    {
+      "name": "agentic-review",
+      "source": "./plugins/agentic-review",
+      "description": "Orchestrates discovery, analysis, independent checks, a lead reviewer and per-paper Zotero annotation, with checkpoints where you decide."
+    }
+  ]
+}

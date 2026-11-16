@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""Figures of the reading edition: check them, preview them, or see the gallery of examples.
+
+  ar-figures check <dir>             check 5-final/figures/figures.json against the review; print what each figure
+                                     shows (rows, computed totals) or why it is refused. Exit 1 when one is refused.
+  ar-figures preview <dir> [--png]   draw the figures alone into 5-final/figures/preview/index.html; with --png, also
+                                     one PNG per figure and theme (needs Chrome or Chromium) to look at them.
+  ar-figures gallery [--out DIR] [--png]
+                                     draw the plugin's example figures (templates/figures/examples: the six figures
+                                     of the original k-space review plus two more) to look at before adapting one.
+
+The format is documented in templates/figures/GUIDE.md. ar-edition places the figures in the page.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import json
+import os
+import shutil
+import subprocess
+
+import arlib
+from edition import figures, page, zlinks
+
+PLUGIN = Path(__file__).resolve().parent.parent
+EXAMPLES = PLUGIN / "templates" / "figures" / "examples"
+CHROMES = [
+    "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+    "/Applications/Chromium.app/Contents/MacOS/Chromium",
+    "google-chrome",
+    "google-chrome-stable",
+    "chromium",
+    "chromium-browser",
+    "chrome",
+    r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+]
+
+
+def review_ctx(rdir):
+    review = arlib.load_review(rdir)
+    md = page.read(str(rdir / "5-final" / "review.md")) if (rdir / "5-final" / "review.md").exists() else ""
+    md = "\n".join(ln for ln in md.splitlines() if not page.MARKER.match(ln)) + "\n"
+    counts = arlib.load_json(rdir / "5-final" / "counts.json", {}) or {}
+    rows = zlinks.read_citemap(str(rdir / arlib.CITEMAP)) if (rdir / arlib.CITEMAP).exists() else []
+    linker = zlinks.Linker(rows)
+    data = page.Data(linker, True, page.load_records(str(rdir)), page.load_claims(str(rdir)))
+    return figures.Ctx.for_review(rdir, review, md, counts, linker, data)
+
+
+def find_chrome():
+    for c in CHROMES:
+        p = c if os.path.isabs(c) else shutil.which(c)
+        if p and os.path.exists(p):
+            return p
+    return None
+
+
+def screenshots(html_path, sizes, out_dir):
+    chrome = find_chrome()
+    if not chrome:
+        print("no Chrome or Chromium found: open the HTML file instead")
+        return []
+    made = []
+    for fid, ratio in sizes:
+        height = int(920 * ratio + 260)
+        for theme in ("light", "dark"):
+            png = out_dir / f"{fid}-{theme}.png"
+            url = html_path.resolve().as_uri() + f"?only={fid}&theme={theme}"
+            cmd = [
+                chrome,
+                "--headless=new",
+                "--disable-gpu",
+                "--hide-scrollbars",
+                "--no-first-run",
+                "--no-default-browser-check",
+                f"--user-data-dir={out_dir / '.chrome'}",
+                f"--window-size=1000,{height}",
+                f"--screenshot={png}",
+                url,
+            ]
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=60)
+            except (OSError, subprocess.TimeoutExpired) as e:
+                print(f"screenshot failed ({e})")
+                return made
+            if png.exists():
+                made.append(png)
+    shutil.rmtree(out_dir / ".chrome", ignore_errors=True)
+    return made
+
+
+def cmd_check(args):
+    rdir = arlib.review_dir(args.dir)
+    figs, problems = figures.load_spec(rdir)
+    if figs is None:
+        print(f"no {figures.SPEC}: the page will have no figures")
+        return 0
+    ctx = review_ctx(rdir)
+    bad = list(problems)
+    for i, fig in enumerate(figs):
+        prep, issues = figures.prepare(fig, ctx, str(rdir / figures.FIG_DIR))
+        name = (prep or {}).get("id") or f"#{i + 1}"
+        if issues:
+            bad += [f'figure "{name}": {b}' for b in issues]
+            continue
+        _, n = figures.render(prep, ctx)
+        where = f"{prep['place']['section']} / after {prep['place']['after']}"
+        comp: list[str] = sorted(prep["computed"], key=float)
+        extra = f"; computed numbers {', '.join(comp[:12])}" if comp else ""
+        what = "marks" if prep["type"] == "custom" else "rows or points"
+        print(
+            f'ok   {name}: {prep["type"]}, {n} {what}; under "{where}"; links from section '
+            f'"{prep["h3"] or prep["h2"]}"{extra}'
+        )
+    for b in bad:
+        print(f"refused: {b}")
+    print(f"{len(figs)} figures, {len(bad)} problems")
+    return 1 if bad else 0
+
+
+def cmd_preview(args):
+    rdir = arlib.review_dir(args.dir)
+    figs, problems = figures.load_spec(rdir)
+    if figs is None:
+        print(f"no {figures.SPEC}")
+        return 1
+    ctx = review_ctx(rdir)
+    body, refused, sizes = figures.render_list(figs, ctx, str(rdir / figures.FIG_DIR))
+    for r in problems + refused:
+        print(f"refused: {r}")
+    out_dir = rdir / figures.FIG_DIR / "preview"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / "index.html"
+    note = (
+        "Each figure alone, as the reading edition will draw it (links are not active here). "
+        "Add <code>?theme=dark</code> to the address for the dark theme."
+    )
+    arlib.atomic_write_text(html_path, figures.standalone(body, "Figures preview", note))
+    print(f"wrote {arlib.rel(rdir, html_path)} ({len(sizes)} figures)")
+    if args.png:
+        for p in screenshots(html_path, sizes, out_dir):
+            print(f"  {arlib.rel(rdir, p)}")
+    return 1 if refused or problems else 0
+
+
+def cmd_gallery(args):
+    figs = []
+    for name in ("figures.json", "templates.json"):
+        figs += json.loads((EXAMPLES / name).read_text(encoding="utf-8"))["figures"]
+    ctx = figures.Ctx(check=False)
+    body, refused, sizes = figures.render_list(figs, ctx, str(EXAMPLES))
+    out_dir = Path(args.out).expanduser().resolve() if args.out else Path.cwd() / "figure-gallery"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    html_path = out_dir / "index.html"
+    note = (
+        "The figures of the original k-space review, drawn by the plugin from "
+        "<code>templates/figures/examples/figures.json</code>, plus two new ones (scatter, columns) and a "
+        "pipeline template and a custom slope chart (<code>templates.json</code>). "
+        "Copy one, change its data and words: see GUIDE.md."
+    )
+    html_path.write_text(figures.standalone(body, "agentic-review figure gallery", note), encoding="utf-8")
+    for r in refused:
+        print(f"refused: {r}")
+    print(f"wrote {html_path} ({len(sizes)} figures)")
+    if args.png:
+        for p in screenshots(html_path, sizes, out_dir):
+            print(f"  {p}")
+    return 1 if refused else 0
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-figures", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    c = sub.add_parser("check", help="check the review's figures")
+    c.add_argument("dir")
+    p = sub.add_parser("preview", help="draw the review's figures alone")
+    p.add_argument("dir")
+    p.add_argument("--png", action="store_true", help="also take screenshots (Chrome or Chromium)")
+    g = sub.add_parser("gallery", help="draw the plugin's example figures")
+    g.add_argument("--out", help="folder for the gallery (default ./figure-gallery)")
+    g.add_argument("--png", action="store_true", help="also take screenshots (Chrome or Chromium)")
+    args = ap.parse_args(argv)
+    return {"check": cmd_check, "preview": cmd_preview, "gallery": cmd_gallery}[args.cmd](args)
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,365 @@
+#!/usr/bin/env python3
+"""Mechanical reference check: resolve each record's DOI / arXiv id against CrossRef and arXiv.
+
+Adds a `ref_check` object to every record (status verified | partially-verified | mismatch | unresolved, the
+checks run, the metadata found, `year_vor` / `venue_vor` from an accepted CrossRef match) and never edits the
+record's own fields except normalising `doi` / `arxiv_id` (recorded in ref_check.normalised).
+Records with neither id get a CrossRef, then arXiv, title search; a close match is proposed, not applied.
+
+With --against <corpus.jsonl> (for the omission check), records that duplicate the corpus by DOI, arXiv id or
+title are dropped and listed in the report, and keys that collide with corpus keys get a suffix. This is
+automatic when the input file is named omissions.jsonl and 2-merged/corpus.jsonl exists.
+
+Responses are cached in <dir>/.cache/refcheck/; --offline uses the cache only and sends nothing.
+Exit 1 when a record is not verified (year or first-author differences are reported but do not fail).
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import html
+import json
+import urllib.parse
+from collections import Counter
+
+import arlib
+
+OK_SIM = 0.85
+PROPOSE_SIM = 0.92
+DUP_SIM = 0.93
+ARXIV_BATCH = 40
+
+
+class Fetcher:
+    def __init__(self, cache, offline):
+        self.cache, self.offline, self.misses = cache, offline, 0
+
+    def get(self, url):
+        """(data or None, available). available is False only on an offline cache miss."""
+        try:
+            return arlib.http_get(url, self.cache, offline=self.offline), True
+        except arlib.OfflineMiss:
+            self.misses += 1
+            return None, False
+
+
+def crossref_year(msg):
+    """Year of first publication of the version of record: the earliest of the online, print, issued and
+    published dates, and of the conference start for proceedings (a paper online in 2022 and in a 2024 issue is
+    cited 2022; a 2025 conference paper in a volume dated 2026 is cited 2025)."""
+    years = []
+    for k in ("published-online", "published-print", "issued", "published"):
+        parts = (msg.get(k) or {}).get("date-parts") or [[None]]
+        if parts and parts[0] and parts[0][0]:
+            years.append(int(parts[0][0]))
+    start = ((msg.get("event") or {}).get("start") or {}).get("date-parts") or [[None]]
+    if start and start[0] and start[0][0]:
+        years.append(int(start[0][0]))
+    return min(years) if years else None
+
+
+def crossref_meta(msg):
+    year = crossref_year(msg)
+    authors = msg.get("author") or []
+    venue = (msg.get("container-title") or [""])[0] or (msg.get("event") or {}).get("name")
+    return {
+        "title": html.unescape(html.unescape((msg.get("title") or [""])[0] or "")),
+        "year": year,
+        "venue": html.unescape(html.unescape(venue)) if venue else venue,
+        "first_author": authors[0].get("family") if authors else None,
+        "doi": msg.get("DOI"),
+        "type": msg.get("type"),
+    }
+
+
+def crossref_doi(doi, fx):
+    data, ok = fx.get("https://api.crossref.org/works/" + urllib.parse.quote(doi, safe="/"))
+    if not data:
+        return None, ok
+    try:
+        return crossref_meta(json.loads(data)["message"]), True
+    except (ValueError, KeyError, TypeError):
+        return None, True
+
+
+def crossref_search(title, author, fx):
+    q = urllib.parse.quote_plus(f"{title} {author or ''}".strip())
+    data, ok = fx.get(f"https://api.crossref.org/works?query.bibliographic={q}&rows=5")
+    if not data:
+        return None, ok
+    try:
+        items = json.loads(data)["message"]["items"]
+    except (ValueError, KeyError, TypeError):
+        return None, True
+    metas = [crossref_meta(it) for it in items]
+    return max(metas, key=lambda m: arlib.title_sim(m["title"], title), default=None), True
+
+
+def arxiv_batch(ids, fx):
+    """({arxiv_id: meta}, {ids not checked because offline})."""
+    found, unchecked = {}, set()
+    ids = sorted(set(ids))
+    for i in range(0, len(ids), ARXIV_BATCH):
+        chunk = ids[i : i + ARXIV_BATCH]
+        url = "https://export.arxiv.org/api/query?id_list=" + ",".join(chunk) + f"&max_results={len(chunk)}"
+        data, ok = fx.get(url)
+        if not ok:
+            unchecked.update(a.lower() for a in chunk)
+        elif data:
+            found.update({k.lower(): v for k, v in arlib.parse_arxiv_feed(data).items()})
+    return found, unchecked
+
+
+def arxiv_title_search(title, fx):
+    words = [w for w in arlib.norm_text(title).split() if len(w) > 3][:7]
+    if not words:
+        return None, True
+    q = "+AND+".join("ti:" + urllib.parse.quote(w) for w in words)
+    data, ok = fx.get(f"https://export.arxiv.org/api/query?search_query={q}&max_results=5")
+    if not data:
+        return None, ok
+    hits = arlib.parse_arxiv_feed(data)
+    if not hits:
+        return None, True
+    aid, meta = max(hits.items(), key=lambda kv: arlib.title_sim(kv[1]["title"], title))
+    return dict(meta, arxiv_id=aid), True
+
+
+def same_author(a, b):
+    return bool(a and b and arlib.norm_text(a).split()[-1:] == arlib.norm_text(b).split()[-1:])
+
+
+def drop_duplicates(recs, corpus):
+    """Drop records that duplicate the corpus; rename keys that collide with corpus keys."""
+    ids = set()
+    for c in corpus:
+        ids |= arlib.record_ids(c)
+    titles = [(c, arlib.norm_text(c.get("title"))) for c in corpus]
+    taken = {c.get("key") for c in corpus}
+    kept, dropped, renamed = [], [], []
+    for r in recs:
+        t = arlib.norm_text(r.get("title"))
+        hit = arlib.record_ids(r) & ids
+        twin = None if hit else next((c for c, x in titles if arlib.same_work_by_title(r, c, DUP_SIM, t, x)), None)
+        if hit or twin is not None:
+            why = ", ".join(f"{k} {v}" for k, v in sorted(hit)) or f"title (same work as {(twin or {}).get('key')})"
+            dropped.append((r.get("key"), why))
+            continue
+        k = r.get("key")
+        nk = arlib.unique_key(k, taken)
+        if nk != k:
+            renamed.append((k, nk))
+            r["key"] = nk
+        kept.append(r)
+    return kept, dropped, renamed
+
+
+def check_record(r, arx_info, fx):
+    chk = {"checks": []}
+    title, fa = r.get("title"), r.get("first_author")
+    verified = mismatch = False
+    doi, aid = r.get("doi"), r.get("arxiv_id")
+    if doi and not arlib.is_arxiv_doi(doi):
+        m, ok = crossref_doi(doi, fx)
+        if not ok:
+            chk["checks"].append("doi-not-checked(offline)")
+        elif m is None:
+            chk["checks"].append("doi-not-found")
+            mismatch = True
+        else:
+            s = arlib.title_sim(m["title"], title)
+            chk["crossref"] = dict(m, title_similarity=s)
+            if s >= OK_SIM:
+                verified = True
+                chk["checks"].append("doi-ok")
+                chk["year_vor"] = m["year"] or r.get("year")
+                chk["venue_vor"] = m["venue"] or r.get("venue")
+                try:
+                    if r.get("year") and m["year"] and int(m["year"]) != int(r["year"]):
+                        chk["checks"].append(f"year-differs(record {r['year']} vs crossref {m['year']})")
+                except (TypeError, ValueError):
+                    pass
+                if fa and m["first_author"] and not same_author(fa, m["first_author"]):
+                    chk["checks"].append(f"first-author-differs({fa} vs {m['first_author']})")
+            else:
+                chk["checks"].append("doi-title-mismatch")
+                mismatch = True
+    if aid:
+        arx, unchecked = arx_info
+        m = arx.get(aid.lower())
+        if m is None and aid.lower() in unchecked:
+            chk["checks"].append("arxiv-not-checked(offline)")
+        elif m is None:
+            chk["checks"].append("arxiv-not-found")
+            mismatch = True
+        else:
+            s = arlib.title_sim(m["title"], title)
+            chk["arxiv"] = {k: v for k, v in dict(m, title_similarity=s).items() if k != "authors"}
+            if s >= OK_SIM:
+                verified = True
+                chk["checks"].append("arxiv-ok")
+            else:
+                chk["checks"].append("arxiv-title-mismatch")
+                mismatch = True
+    if not doi and not aid:
+        m, ok = crossref_search(title, fa, fx)
+        if m and arlib.title_sim(m["title"], title) >= PROPOSE_SIM:
+            chk["proposed_doi"] = m["doi"]
+            chk["crossref"] = dict(m, title_similarity=arlib.title_sim(m["title"], title))
+            chk["checks"].append("doi-proposed")
+            chk["year_vor"] = m["year"] or r.get("year")
+            chk["venue_vor"] = m["venue"] or r.get("venue")
+            verified = True
+        else:
+            a, ok2 = arxiv_title_search(title, fx)
+            if a and arlib.title_sim(a["title"], title) >= PROPOSE_SIM:
+                chk["proposed_arxiv"] = a["arxiv_id"]
+                chk["arxiv"] = {
+                    k: v
+                    for k, v in dict(a, title_similarity=arlib.title_sim(a["title"], title)).items()
+                    if k != "authors"
+                }
+                chk["checks"].append("arxiv-proposed")
+                verified = True
+            elif not (ok and ok2):
+                chk["checks"].append("search-not-run(offline)")
+            else:
+                chk["checks"].append("no-match-found")
+    if verified and not mismatch:
+        status = "verified"
+    elif verified and mismatch:
+        status = "partially-verified"
+    elif mismatch:
+        status = "mismatch"
+    else:
+        status = "unresolved"
+    chk["status"] = status
+    chk["checked"] = arlib.now_iso()[:10]
+    return chk
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-refcheck",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="Relative paths are taken from the review folder. "
+        "Example: ar-refcheck . 2-merged/merged.jsonl 2-merged/corpus.jsonl "
+        "2-merged/refcheck_report.md",
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("inp", metavar="in.jsonl")
+    ap.add_argument("out", metavar="out.jsonl")
+    ap.add_argument("report", metavar="report.md")
+    ap.add_argument("--against", metavar="corpus.jsonl", help="drop records that duplicate this corpus")
+    ap.add_argument("--offline", action="store_true", help="use cached responses only; send no request")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    inp = arlib.resolve(rdir, args.inp)
+    if not inp.exists():
+        arlib.die(f"error: input not found: {args.inp}", 2)
+    try:
+        recs = arlib.load_jsonl(inp)
+    except ValueError as e:
+        arlib.die(f"error: {e}", 1)
+    fx = Fetcher(rdir / ".cache" / "refcheck", args.offline)
+    if not args.offline:
+        fx.cache.mkdir(parents=True, exist_ok=True)
+
+    for r in recs:
+        norm = {}
+        for f, fn in (("doi", arlib.norm_doi), ("arxiv_id", arlib.norm_arxiv)):
+            new = fn(r.get(f))
+            if r.get(f) is not None and new != r.get(f):
+                norm[f] = [r.get(f), new]
+            if f in r or new:
+                r[f] = new
+        if r.get("doi") and r["doi"].startswith("10.48550/arxiv.") and not r.get("arxiv_id"):
+            norm["arxiv_id"] = [None, r["doi"].split("arxiv.", 1)[1]]
+            r["arxiv_id"] = norm["arxiv_id"][1]
+        r["_norm"] = norm
+
+    dropped, renamed = [], []
+    if (
+        not args.against
+        and inp.name == "omissions.jsonl"
+        and (rdir / arlib.CORPUS).exists()
+        and inp.resolve() != (rdir / arlib.CORPUS).resolve()
+    ):
+        args.against = arlib.CORPUS
+        print(
+            f"note: input is omissions.jsonl, so records duplicating {arlib.CORPUS} are dropped "
+            f"(as with --against {arlib.CORPUS})"
+        )
+    if args.against:
+        corpus_p = arlib.resolve(rdir, args.against)
+        if not corpus_p.exists():
+            arlib.die(f"error: corpus not found: {args.against}", 2)
+        recs, dropped, renamed = drop_duplicates(recs, arlib.load_jsonl(corpus_p))
+        for r in recs:
+            r.setdefault("found_by", [inp.stem])
+
+    arx_info = arxiv_batch([r["arxiv_id"] for r in recs if r.get("arxiv_id")], fx)
+    status_count = Counter()
+    problems = []
+    for r in recs:
+        chk = check_record(r, arx_info, fx)
+        norm = r.pop("_norm")
+        if norm:
+            chk["normalised"] = norm
+        r["ref_check"] = chk
+        status_count[chk["status"]] += 1
+        if chk["status"] != "verified" or any(
+            c.startswith(("year-differs", "first-author-differs")) for c in chk["checks"]
+        ):
+            problems.append(r)
+
+    out = arlib.resolve(rdir, args.out)
+    arlib.save_jsonl(out, recs)
+    rep = [
+        "# Mechanical reference check (CrossRef / arXiv)",
+        "",
+        f"Input: {arlib.rel(rdir, inp)} ({len(recs) + len(dropped)} records)"
+        + (f"; offline, {fx.misses} uncached requests skipped" if args.offline else ""),
+        "",
+        *[f"- {k}: {v}" for k, v in status_count.most_common()],
+        "",
+    ]
+    if args.against:
+        rep += [
+            f"## Dropped as duplicates of {args.against} ({len(dropped)})",
+            "",
+            *[f"- {k}: {why}" for k, why in dropped],
+            "",
+        ]
+        if renamed:
+            rep += ["## Keys renamed (collision with the corpus)", "", *[f"- {a} -> {b}" for a, b in renamed], ""]
+    rep += [
+        "## Records needing attention",
+        "",
+        "| key | status | checks | record title | source title |",
+        "| --- | --- | --- | --- | --- |",
+    ]
+    for r in problems:
+        c = r["ref_check"]
+        src = (c.get("crossref") or c.get("arxiv") or {}).get("title", "")
+        rep.append(
+            f"| {r.get('key')} | {c['status']} | {arlib.md_cell('; '.join(c['checks']))} | "
+            f"{arlib.md_cell(r.get('title'))} | {arlib.md_cell(src)} |"
+        )
+    arlib.atomic_write_text(arlib.resolve(rdir, args.report), "\n".join(rep) + "\n")
+    print(
+        dict(status_count),
+        f"attention={len(problems)}",
+        f"dropped={len(dropped)}" if args.against else "",
+        f"offline_misses={fx.misses}" if args.offline else "",
+    )
+    failing = sum(v for k, v in status_count.items() if k != "verified")
+    return 1 if failing else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

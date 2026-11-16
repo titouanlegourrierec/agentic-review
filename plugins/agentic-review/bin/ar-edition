@@ -1,0 +1,307 @@
+#!/usr/bin/env python3
+"""Build the reading edition of a review: 7-edition/index.html, one self-contained web page.
+
+The page has a table of contents, headline tiles and key points (5-final/key_points.json, optional), hover
+previews, a glossary (review.json edition.glossary, taxonomy and rigor_rubric), the references with BibTeX, the
+catalogue and the rigor table. Every citation's text is first rewritten from 5-final/citation_map.tsv, matching
+by URL, so the page shows the map's current labels.
+
+Zotero mode (review.json zotero.enabled, unless --no-zotero): reads the collection zotero.collection (a name or a
+key; sub-collections included) and the tag zotero.tag through Zotero's local API, read-only, saves
+7-edition/zotero_snapshot.json (reused on later runs unless --refresh; --snapshot FILE uses a given snapshot
+instead of Zotero), and links each citation to the highlight that supports it, else to the PDF. Citation keys map
+to Zotero items through 5-final/annotation_results.json and edition.pilot ({label or key: item key}); without
+annotation_results.json, by DOI or arXiv id.
+Without Zotero: each citation opens its citation-map link and the hover shows the paper's title, venue, year, its
+one-line claim and the claims-check verdicts about it (4-checks/claims_check*.jsonl).
+
+Writes the page (or --out), and next to an index.html the launchers (templates/edition) and a README.md.
+Markdown is rendered by pandoc when it is on PATH, else by a built-in GFM subset (AR_EDITION_MARKDOWN=builtin
+forces it). Exit 1 when 5-final/review.md is missing, when a key point or a tile is refused (its numbers are not in
+the review; nothing is written), when Zotero cannot be read, or when a zotero:// link does not resolve to an
+attachment and annotation of the snapshot.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import datetime
+import json
+import os
+import re
+import urllib.error
+
+import arlib
+from edition import markdown, page, zlinks
+
+EDITION = "7-edition"
+LAUNCHERS = ["open-in-chrome.command", "open-in-browser.sh", "open-in-browser.bat"]
+DEFAULT_PORT = 47815
+
+
+def launcher_title(t):
+    """Title safe inside a shell or batch comment line."""
+    t = re.sub(r"[^\w .,:;()'’-]+", " ", t or "", flags=re.UNICODE)
+    return re.sub(r"\s+", " ", t).strip() or "Reading edition"
+
+
+def port_of(ed, warnings):
+    try:
+        p = int(ed.get("port") or DEFAULT_PORT)
+    except (TypeError, ValueError):
+        p = 0
+    if not 1024 <= p <= 65535:
+        warnings.append(f"edition.port {ed.get('port')!r} is not a port number: using {DEFAULT_PORT}")
+        p = DEFAULT_PORT
+    return p
+
+
+def snapshot_index(items):
+    """{('doi', x) | ('arxiv', y): item key} over the snapshot."""
+    idx = {}
+    for k, it in items.items():
+        doi = arlib.norm_doi(it.get("doi"))
+        if doi:
+            if doi.startswith("10.48550/arxiv."):
+                idx.setdefault(("arxiv", doi.split("arxiv.", 1)[1]), k)
+            else:
+                idx.setdefault(("doi", doi), k)
+        m = re.search(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+)", it.get("url") or "", re.I)
+        if m:
+            idx.setdefault(("arxiv", arlib.norm_arxiv(m.group(1)).lower()), k)
+    return idx
+
+
+def url_id(url):
+    m = re.match(r"https?://(?:dx\.)?doi\.org/(.+)$", url or "", re.I)
+    if m:
+        d = arlib.norm_doi(m.group(1))
+        return ("arxiv", d.split("arxiv.", 1)[1]) if d.startswith("10.48550/arxiv.") else ("doi", d)
+    m = re.search(r"arxiv\.org/(?:abs|pdf)/([^\s?#]+)", url or "", re.I)
+    if m:
+        return ("arxiv", arlib.norm_arxiv(m.group(1)).lower())
+    return None
+
+
+def key_to_item(rdir, review, rows, items, warnings):
+    """Citation key -> Zotero item key: 5-final/annotation_results.json first, then the DOI or arXiv id of the
+    citation-map link for the keys it does not cover (the pilot papers, papers added later), then edition.pilot."""
+    k2i, n = {}, {"annotation_results.json": 0, "DOI or arXiv id": 0, "edition.pilot": 0}
+    data = arlib.load_json(rdir / "5-final" / "annotation_results.json", None)
+    results = (data.get("results") if isinstance(data, dict) else data) if data is not None else []
+    for r in results or []:
+        if isinstance(r, dict) and r.get("key") and r.get("item_key"):
+            k2i[r["key"]] = r["item_key"]
+            n["annotation_results.json"] += 1
+    idx = snapshot_index(items)
+    for row in rows:
+        ident = url_id(row.get("url"))
+        if row["key"] not in k2i and ident and ident in idx:
+            k2i[row["key"]] = idx[ident]
+            n["DOI or arXiv id"] += 1
+    label2key = {r["label"]: r["key"] for r in rows}
+    keys = set(label2key.values())
+    pilot = (review.get("edition") or {}).get("pilot") or {}
+    for name, item in pilot.items() if isinstance(pilot, dict) else []:
+        key = label2key.get(name) or (name if name in keys else None)
+        if key and item:
+            k2i[key] = item
+            n["edition.pilot"] += 1
+        else:
+            warnings.append(f"edition.pilot: {name} is neither a label nor a key of the citation map")
+    return k2i, ", ".join(f"{v} by {k}" for k, v in n.items() if v) or "none"
+
+
+def write_launchers(out_dir, title, port_no, web, today, share=False):
+    tdir = arlib.TEMPLATES / "edition"
+    t = launcher_title(title)
+    for name in LAUNCHERS:
+        src = tdir / name
+        if not src.exists():
+            continue
+        text = src.read_text(encoding="utf-8").replace("{PORT}", str(port_no)).replace("{TITLE}", t)
+        dest = out_dir / name
+        arlib.atomic_write_text(dest, text)
+        os.chmod(dest, 0o644 if name.endswith(".bat") else 0o755)
+    readme = tdir / "README.md"
+    if readme.exists():
+        links = (
+            "Citations open the paper's DOI, arXiv or source page; hovering a citation shows the paper, its "
+            "one-line claim and what the claims check found."
+            if web
+            else "Opened with a launcher, citations open the paper's PDF in `viewer.html`, which draws the review's "
+            "highlights in their colours and scrolls to the cited passage. Opened by double-clicking "
+            "`index.html`, they open the PDF from the `papers` folder in the browser's own reader at the cited "
+            "page (Chrome and Firefox; Safari opens the first page). Hovering a citation shows the highlighted "
+            "passage and its note either way. Papers whose PDF is not in this package open the publisher's page. "
+            "Keep the folder together."
+            if share
+            else "Citations open the cited passage in Zotero: Zotero 7 must be running on this computer. Safari asks "
+            'before each Zotero link; Chrome can remember "Always allow" when the page is served from '
+            f"http://localhost:{port_no} by a launcher."
+        )
+        built = f"{today.day} {page.MONTHS[today.month - 1]} {today.year}"
+        text = (
+            readme.read_text(encoding="utf-8")
+            .replace("{TITLE}", title.replace("\n", " "))
+            .replace("{PORT}", str(port_no))
+            .replace("{LINKS}", links)
+            .replace("{BUILT}", built)
+        )
+        arlib.atomic_write_text(out_dir / "README.md", text)
+        os.chmod(out_dir / "README.md", 0o644)
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-edition", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("--snapshot", metavar="FILE", help="use this Zotero snapshot instead of reading Zotero")
+    ap.add_argument("--no-zotero", action="store_true", help="link citations to their citation-map URL")
+    ap.add_argument(
+        "--refresh", action="store_true", help="re-read Zotero even if 7-edition/zotero_snapshot.json exists"
+    )
+    ap.add_argument("--out", metavar="FILE", help=f"output file (default {EDITION}/index.html)")
+    ap.add_argument(
+        "--share-map",
+        metavar="FILE",
+        help="share mode (used by ar-share): a JSON map {attachment key: "
+        "relative path of its PDF}; citations open those PDFs instead of Zotero",
+    )
+    args = ap.parse_args(argv)
+    if args.no_zotero and args.snapshot:
+        ap.error("--snapshot and --no-zotero exclude each other")
+    if args.share_map and args.no_zotero:
+        ap.error("--share-map needs the Zotero snapshot: drop --no-zotero")
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    ed = review.get("edition") or {}
+    zcfg = review.get("zotero") or {}
+    today = datetime.date.today()
+    warnings = []
+    if not (rdir / arlib.REVIEW_MD).exists():
+        print(f"missing {arlib.REVIEW_MD}")
+        return 1
+    if (rdir / arlib.CITEMAP).exists():
+        rows = zlinks.read_citemap(rdir / arlib.CITEMAP)
+    else:
+        rows = []
+        warnings.append(f"{arlib.CITEMAP} missing: citations keep the links written in review.md")
+
+    zotero_mode = not args.no_zotero and (bool(zcfg.get("enabled")) or bool(args.snapshot) or bool(args.share_map))
+    share = None
+    if args.share_map:
+        try:
+            share = json.loads(Path(args.share_map).read_text(encoding="utf-8"))
+        except (OSError, ValueError) as e:
+            print(f"error: cannot read --share-map ({e})")
+            return 1
+    items, k2i, source = {}, {}, ""
+    if zotero_mode:
+        snap = rdir / EDITION / "zotero_snapshot.json"
+        try:
+            if args.snapshot:
+                path = arlib.resolve(rdir, args.snapshot)
+                items, source = zlinks.load_snapshot(path), f"snapshot {path}"
+            elif snap.exists() and not args.refresh:
+                items, source = (
+                    zlinks.load_snapshot(snap),
+                    f"snapshot {arlib.rel(rdir, snap)} (reused; --refresh re-reads Zotero)",
+                )
+            else:
+                if not zcfg.get("collection"):
+                    print("zotero.collection is empty in review.json: set it, or pass --no-zotero")
+                    return 1
+                zot = zlinks.Zotero(user_agent=arlib.USER_AGENT)
+                items = zlinks.read_snapshot(zot, zcfg["collection"])
+                arlib.atomic_write_text(snap, json.dumps(items, ensure_ascii=False, indent=1))
+                source = f"Zotero collection {zcfg['collection']} -> {arlib.rel(rdir, snap)}"
+        except (urllib.error.URLError, OSError) as e:
+            print(f"cannot read Zotero ({e}): start Zotero 7, or pass --no-zotero or --snapshot FILE")
+            return 1
+        except (LookupError, ValueError) as e:
+            print(f"error: {e}")
+            return 1
+        k2i, how = key_to_item(rdir, review, rows, items, warnings)
+        source += f"; {len(k2i)} papers matched to Zotero items ({how})"
+
+    taxonomy = arlib.family_names(review)
+    codes = list(taxonomy) or sorted({c for r in rows for c in arlib.family_codes(r.get("family"))})
+    limit = ed.get("limit_words")
+    linker = zlinks.Linker(
+        rows,
+        items,
+        k2i,
+        tag=zcfg.get("tag") or "",
+        fam=zlinks.family_regex(codes),
+        limit=zlinks.limit_regex(limit if isinstance(limit, list) and limit else None),
+        share=share,
+    )
+    for key, item, why in linker.issues:
+        warnings.append(f"mapping issue: {key} -> Zotero item {item}: {why}")
+
+    try:
+        html_page, stats, refused, more = page.build(rdir, review, linker, web=not zotero_mode, today=today)
+    except ValueError as e:
+        print(f"error: {e}")
+        return 1
+    warnings += more
+    port_no = port_of(ed, warnings)
+    for w in warnings:
+        print(f"warning: {w}")
+    if refused:
+        for r in refused:
+            print(f"refused: {r}")
+        print("nothing written: fix 5-final/key_points.json or 5-final/figures/figures.json and rerun")
+        return 1
+
+    out = Path(args.out).expanduser().resolve() if args.out else rdir / EDITION / "index.html"
+    arlib.atomic_write_text(out, html_page)
+    os.chmod(out, 0o644)
+    if out.name == "index.html":
+        # a shared package gets its own port, so it never collides with the author's edition served on port_no
+        write_launchers(
+            out.parent,
+            stats["title"],
+            port_no + 1 if share is not None else port_no,
+            not zotero_mode,
+            today,
+            share=share is not None,
+        )
+    if share is not None:
+        bad = sorted(set(re.findall(r'zotero://[^"\s<>\']*', html_page.split("<script", 1)[0])))
+    else:
+        bad = (
+            page.unresolved_zotero_links(html_page, items)
+            if zotero_mode
+            else sorted(set(re.findall(r'href="(zotero://[^"]*)"', html_page)))
+        )
+    kinds = stats["kinds"]
+    print(
+        f"{arlib.rel(rdir, out)}: {stats['size'] / 1e6:.2f} MB; citations {kinds}; popover entries "
+        f"{stats['cites']}; papers {stats['papers']}; highlights {stats['anns']}; figures {stats['figures']}; "
+        f"figure rows linked {stats['figure_links']} {stats['figure_kinds'] or ''}; "
+        f"key-point boxes {stats['kp']}; glossary terms {stats['gloss']}; BibTeX entries {stats['bib']} of "
+        f"{stats['refs']}; catalogue rows {stats['cat']}; tiles {stats['tiles']}; relabelled {stats['relabelled']} "
+        f"({stats['relabelled_review']} in review.md); mode {'share' if share is not None else 'zotero' if zotero_mode else 'web'}; "
+        f"markdown {markdown.renderer_name()}"
+    )
+    if source:
+        print(f"links from {source}")
+    if bad:
+        print(
+            f"{len(bad)} zotero:// links "
+            + ("left in the shared page:" if share is not None else "do not resolve in the snapshot:")
+        )
+        for u in bad[:20]:
+            print(f"  {u}")
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 196">
+  <title>A method as a pipeline: a template to adapt</title>
+  <!-- legend: what the fills mean -->
+  <rect x="0" y="3" width="14" height="10" rx="2" class="fill-1"/>
+  <text x="19" y="11.5" class="fill-ink2" font-size="8.5">learned (trained weights)</text>
+  <rect x="150" y="3" width="14" height="10" rx="2" class="fill-surface line-ink2" stroke-width="1"/>
+  <text x="169" y="11.5" class="fill-ink2" font-size="8.5">fixed (no weights)</text>
+  <rect x="270" y="3" width="14" height="10" rx="2" class="fill-panel line-grid" stroke-width="1"/>
+  <text x="289" y="11.5" class="fill-ink2" font-size="8.5">data</text>
+  <!-- the stages, left to right -->
+  <rect x="0" y="62" width="110" height="44" rx="6" class="fill-panel line-grid" stroke-width="1"/>
+  <text x="55" y="81" text-anchor="middle" font-weight="600">Input</text>
+  <text x="55" y="95" text-anchor="middle" class="fill-muted" font-size="8">what is measured</text>
+  <line x1="112" y1="84" x2="158" y2="84" class="line-ink2" stroke-width="1" marker-end="url(#fg-arrow)"/>
+  <text x="135" y="79" text-anchor="middle" class="fill-ink2" font-size="8">transform</text>
+  <rect x="160" y="62" width="130" height="44" rx="6" class="fill-1"/>
+  <text x="225" y="81" text-anchor="middle" font-weight="600" class="on-dark">Learned step</text>
+  <text x="225" y="95" text-anchor="middle" class="on-dark" font-size="8">a network</text>
+  <line x1="292" y1="84" x2="338" y2="84" class="line-ink2" stroke-width="1" marker-end="url(#fg-arrow)"/>
+  <rect x="340" y="62" width="130" height="44" rx="6" class="fill-surface line-ink2" stroke-width="1"/>
+  <text x="405" y="81" text-anchor="middle" font-weight="600">Fixed step</text>
+  <text x="405" y="95" text-anchor="middle" class="fill-muted" font-size="8">a known operator</text>
+  <line x1="472" y1="84" x2="518" y2="84" class="line-ink2" stroke-width="1" marker-end="url(#fg-arrow)"/>
+  <rect x="520" y="62" width="110" height="44" rx="6" class="fill-panel line-grid" stroke-width="1"/>
+  <text x="575" y="81" text-anchor="middle" font-weight="600">Output</text>
+  <text x="575" y="95" text-anchor="middle" class="fill-muted" font-size="8">the estimate</text>
+  <!-- the loop: repeat the two steps -->
+  <path d="M405,108 L405,132 L225,132 L225,110" fill="none" class="line-muted" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#fg-arrow-muted)"/>
+  <text x="315" y="146" text-anchor="middle" class="fill-muted" font-size="8.5">repeated N times (unrolled)</text>
+  <!-- a side note -->
+  <rect x="160" y="160" width="310" height="28" rx="6" class="fill-wash"/>
+  <text x="315" y="178" text-anchor="middle" class="fill-ink2" font-size="8.5">Replace the words with the review's own; keep one idea per box.</text>
+</svg>

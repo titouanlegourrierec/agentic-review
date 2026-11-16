@@ -1,0 +1,178 @@
+#!/usr/bin/env python3
+"""Estimate the wall-clock time of launching n agents of one role.
+
+The default durations come from past runs; review.json `estimates` overrides them per role, e.g.
+{"discovery": {"minutes": 50, "parallel": 4}}. Agents run `parallel` at a time (default: all at once; annotators:
+review.json limits.annotators_parallel). When review.json limits.confirm_above_agents is set and n exceeds it, the
+output says to ask the user before launching. Durations of finished agents recorded in state.json are shown for
+comparison. Exit 2 on an unknown role.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import datetime
+import math
+import statistics
+from typing import Any
+
+import arlib
+
+# role: minutes per agent (low-high), parallel (None = all), measured?
+DEFAULTS = {
+    "discovery": {"minutes": [55, 55], "measured": True},
+    "synthesis": {"minutes": [30, 55], "measured": True},
+    "comparison": {"minutes": [30, 55], "measured": True},
+    "rigor-checker": {"minutes": [60, 60], "measured": True},
+    "omissions-checker": {"minutes": [60, 60], "measured": True},
+    "claims-checker": {"minutes": [60, 60], "measured": True},
+    "analysis": {
+        "minutes": [30, 60],
+        "measured": True,
+        "note": "any Phase 3 agent: synthesis, comparison or a checker",
+    },
+    "lead-reviewer": {"minutes": [40, 40], "measured": True},
+    # annotator minutes: 1 to 4 on the mini review (2026-11, many light or PDF-less papers), 6 on the original run
+    "annotator": {"minutes": [2, 6], "parallel": 8, "measured": True},
+    "late-pdf-checker": {"minutes": [5, 15], "measured": True, "note": "duration not measured (guess)"},
+    "code-finder": {"minutes": [20, 40], "measured": False},
+    "repo-auditor": {"minutes": [30, 60], "measured": False},
+    "paper-code-checker": {"minutes": [30, 60], "measured": False},
+    "figure-designer": {"minutes": [10, 30], "measured": False},
+}
+ALIASES = {
+    "phase3": "analysis",
+    "checks": "analysis",
+    "rigor": "rigor-checker",
+    "omissions": "omissions-checker",
+    "claims": "claims-checker",
+    "lead": "lead-reviewer",
+    "lead-review": "lead-reviewer",
+    "annotation": "annotator",
+    "annotators": "annotator",
+    "late-pdf": "late-pdf-checker",
+    "late": "late-pdf-checker",
+    "code": "code-finder",
+    "repo": "repo-auditor",
+    "paper-code": "paper-code-checker",
+    "figures": "figure-designer",
+    "figure": "figure-designer",
+}
+
+
+# review.json `scale`: duration factor applied to the per-agent defaults of whole-corpus roles. "mini" was measured
+# on one mini review (3 discovery agents of 10-15 records, 6 rigor papers, 48 claims, a 4,000-word review): 86 min
+# against about 4 h estimated from the standard figures.
+SCALE = {"standard": 1.0, "mini": 0.35}
+DEFAULT_CONFIRM_ABOVE_AGENTS = 10
+SCALE_NOTE = "factor measured on one mini run"
+PER_PAPER_ROLES = {"annotator", "late-pdf-checker"}
+
+
+def as_range(v):
+    if isinstance(v, (list, tuple)) and v:
+        return [float(v[0]), float(v[-1])]
+    return [float(v), float(v)]
+
+
+def duration(lo, hi):
+    def f(m):
+        return f"{m:.0f} min" if m < 90 else f"{m / 60:.1f} h"
+
+    return f(lo) if abs(hi - lo) < 1e-9 else f"{f(lo)}–{f(hi)}"
+
+
+def past_minutes(rdir, role):
+    st = arlib.load_json(rdir / "state.json", {}) or {}
+    out = []
+    for a in st.get("agents", []):
+        if a.get("role") != role or a.get("status") != "done" or not a.get("started") or not a.get("finished"):
+            continue
+        try:
+            t0 = datetime.datetime.fromisoformat(a["started"])
+            t1 = datetime.datetime.fromisoformat(a["finished"])
+        except ValueError:
+            continue
+        out.append((t1 - t0).total_seconds() / 60)
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-estimate",
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="roles: " + ", ".join(DEFAULTS),
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("n_agents", type=int)
+    ap.add_argument("role")
+    ap.add_argument("--json", action="store_true", help="print the estimate as JSON")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    review = arlib.load_review(rdir)
+    role = ALIASES.get(args.role.lower(), args.role.lower())
+    overrides = review.get("estimates") or {}
+    if role not in DEFAULTS and role not in overrides:
+        arlib.die(f"error: unknown role {args.role!r}; known: {', '.join(DEFAULTS)}", 2)
+    if args.n_agents < 1:
+        arlib.die("error: n_agents must be at least 1", 2)
+    cfg: dict[str, Any] = dict(DEFAULTS.get(role, {"minutes": [0, 0], "measured": False}))
+    over = {k: v for k, v in (overrides.get(role) or {}).items() if k in ("minutes", "parallel")}
+    cfg.update(over)
+    source = (
+        "review.json estimates"
+        if over
+        else ("measured on a past run" if cfg.get("measured") else "rough guess, not measured")
+    )
+    if role == "annotator" and "parallel" not in over:
+        cfg["parallel"] = int((review.get("limits") or {}).get("annotators_parallel") or cfg.get("parallel") or 8)
+    mins = as_range(cfg["minutes"])
+    scale = str(review.get("scale") or "standard").lower()
+    if scale in SCALE and SCALE[scale] != 1.0 and "minutes" not in over and role not in PER_PAPER_ROLES:
+        mins = [round(m * SCALE[scale], 1) for m in mins]
+        source += f"; scaled for a {scale} review ({SCALE_NOTE})"
+    n = args.n_agents
+    parallel = max(1, int(cfg.get("parallel") or n))
+    waves = math.ceil(n / parallel)
+    wall = [mins[0] * waves, mins[1] * waves]
+    past = past_minutes(rdir, role)
+    limit = (review.get("limits") or {}).get("confirm_above_agents", DEFAULT_CONFIRM_ABOVE_AGENTS)
+    over_limit = limit is not None and n > int(limit)
+    if args.json:
+        import json
+
+        print(
+            json.dumps(
+                {
+                    "role": role,
+                    "n_agents": n,
+                    "minutes_per_agent": mins,
+                    "parallel": parallel,
+                    "waves": waves,
+                    "wall_minutes": wall,
+                    "source": source,
+                    "this_review_minutes": [round(m, 1) for m in past],
+                    "confirm_above_agents": limit,
+                    "exceeds_confirm_limit": over_limit,
+                }
+            )
+        )
+        return 0
+    print(f"Estimate: {n} x {role} ({source}{'; ' + cfg['note'] if cfg.get('note') and not over else ''})")
+    print(
+        f"  wall time: {duration(*wall)} ({waves} wave{'s' if waves > 1 else ''} of up to {parallel} in parallel, "
+        f"{duration(*mins)} each)"
+    )
+    if past:
+        print(f"  this review so far: {len(past)} finished {role} agents, median {statistics.median(past):.0f} min")
+    if over_limit:
+        print(f"  MORE than limits.confirm_above_agents ({int(limit)}) agents: ask the user before launching.")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

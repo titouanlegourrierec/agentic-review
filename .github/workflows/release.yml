@@ -1,0 +1,39 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Check
+        run: |
+          uv run ruff check
+          uv run ruff format --check
+          uv run ty check . plugins/agentic-review/bin/ar-*
+          uv run python -m unittest discover -s plugins/agentic-review/tests
+      - name: Pack
+        run: uv run python scripts/pack.py --tag "$GITHUB_REF_NAME" --notes dist/notes.md
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            cat dist/notes.md
+            echo
+            echo "**Install from this release:** download the zip, unzip it, then"
+            echo
+            echo '```bash'
+            echo "claude plugin marketplace add ./agentic-review-${GITHUB_REF_NAME#v}"
+            echo "claude plugin install agentic-review@agentic-review"
+            echo '```'
+          } > dist/release-notes.md
+          gh release create "$GITHUB_REF_NAME" dist/*.zip dist/*.zip.sha256 \
+            --title "agentic-review ${GITHUB_REF_NAME}" --notes-file dist/release-notes.md

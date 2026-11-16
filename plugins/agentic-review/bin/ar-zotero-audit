@@ -1,0 +1,205 @@
+#!/usr/bin/env python3
+"""Read-only audit of the review's Zotero collection through Zotero's local API -> 5-final/zotero_audit.csv.
+
+The collection is review.json zotero.collection (a collection name or an 8-character key; --collection
+overrides); its sub-collections are included. Reports per item: PDFs, review notes (notes containing
+zotero.note_title), whether it carries zotero.tag, and annotations by colour; and prints duplicate items,
+duplicate review notes and duplicate annotations. Nothing in Zotero is modified; item content is data.
+Exit 1 when Zotero cannot be reached, the collection is not found, or duplicates are found.
+"""
+
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "lib"))
+
+import argparse
+import csv
+import io
+import json
+import re
+import urllib.error
+import urllib.request
+from collections import Counter, defaultdict
+
+import arlib
+
+DEFAULT_API = "http://localhost:23119/api/users/0"
+COLOURS = {
+    "#ffd400": "yellow",
+    "#2ea8e5": "blue",
+    "#5fb236": "green",
+    "#ff6666": "red",
+    "#a28ae5": "purple",
+    "#e56eee": "magenta",
+    "#f19837": "orange",
+    "#aaaaaa": "gray",
+}
+KEY_RE = re.compile(r"^[A-Z0-9]{8}$")
+
+
+class Zotero:
+    def __init__(self, api):
+        self.api = api.rstrip("/")
+
+    def get(self, path):
+        """All pages of a GET on the local API (read-only)."""
+        out, start = [], 0
+        while True:
+            sep = "&" if "?" in path else "?"
+            url = f"{self.api}{path}{sep}format=json&limit=100&start={start}"
+            req = urllib.request.Request(url, headers={"User-Agent": arlib.USER_AGENT})
+            with urllib.request.urlopen(req, timeout=30) as r:
+                page = json.load(r)
+            out += page
+            if len(page) < 100:
+                return out
+            start += 100
+
+
+def find_collection(z, wanted):
+    if KEY_RE.match(wanted or ""):
+        return wanted, wanted
+    matches = [c for c in z.get("/collections") if c.get("data", {}).get("name") == wanted]
+    if not matches:
+        return None, None
+    tops = [c for c in matches if not c["data"].get("parentCollection")]
+    c = (tops or matches)[0]
+    return c["key"], c["data"]["name"]
+
+
+def subtree(z, key, name):
+    out = [(key, name)]
+    for s in z.get(f"/collections/{key}/collections"):
+        out += subtree(z, s["key"], f"{name}/{s['data']['name']}")
+    return out
+
+
+def main(argv=None):
+    ap = argparse.ArgumentParser(
+        prog="ar-zotero-audit", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
+    ap.add_argument("dir", help="review folder")
+    ap.add_argument("--collection", help="collection name or key (default: review.json zotero.collection)")
+    ap.add_argument("--api", default=DEFAULT_API, help=f"local API base (default {DEFAULT_API})")
+    args = ap.parse_args(argv)
+    rdir = arlib.review_dir(args.dir)
+    zcfg = arlib.load_review(rdir).get("zotero") or {}
+    wanted = args.collection or zcfg.get("collection")
+    if not wanted:
+        arlib.die("error: no collection: set zotero.collection in review.json or pass --collection", 2)
+    note_title = zcfg.get("note_title") or "Review notes"
+    tag = zcfg.get("tag") or ""
+    z = Zotero(args.api)
+    try:
+        key, name = find_collection(z, wanted)
+        if key is None:
+            print(f"collection {wanted!r} not found in Zotero")
+            return 1
+        colls = subtree(z, key, name)
+        items = {}
+        for ck, cname in colls:
+            for it in z.get(f"/collections/{ck}/items/top"):
+                if it.get("data", {}).get("itemType") in ("note", "attachment", "annotation"):
+                    continue
+                items.setdefault(it["key"], (it, cname))
+        ann_by_parent = defaultdict(list)  # the local API lists annotations through an itemType query
+        for a in z.get("/items?itemType=annotation"):
+            ann_by_parent[a["data"].get("parentItem")].append(a)
+        children = {k: z.get(f"/items/{k}/children") for k in items}
+    except (urllib.error.URLError, OSError, ValueError) as e:
+        print(f"cannot read Zotero's local API at {args.api} ({e}); is Zotero running with the local API enabled?")
+        return 1
+
+    by_id = defaultdict(list)
+    for k, (it, _) in items.items():
+        d = it["data"]
+        ident = arlib.norm_doi(d.get("DOI")) or (d.get("url") or "").lower() or arlib.norm_title(d.get("title"))
+        by_id[ident].append(k)
+    dup_items = {d: ks for d, ks in by_id.items() if d and len(ks) > 1}
+    rows, dup_notes, dup_ann, totals = [], [], [], Counter()
+    for k, (it, coll) in items.items():
+        kids = children[k]
+        notes = [
+            c
+            for c in kids
+            if c["data"].get("itemType") == "note" and note_title.lower() in (c["data"].get("note") or "").lower()
+        ]
+        pdfs = [
+            c
+            for c in kids
+            if c["data"].get("itemType") == "attachment" and c["data"].get("contentType") == "application/pdf"
+        ]
+        if len(notes) > 1:
+            dup_notes.append((k, [n["key"] for n in notes]))
+        colours, n_ann = Counter(), 0
+        for p in pdfs:
+            seen = Counter()
+            for a in ann_by_parent.get(p["key"], []):
+                d = a["data"]
+                sig = (
+                    d.get("annotationType"),
+                    d.get("annotationPageLabel"),
+                    (d.get("annotationText") or "").strip(),
+                    (d.get("annotationComment") or "").strip()[:80],
+                )
+                seen[sig] += 1
+                colours[COLOURS.get((d.get("annotationColor") or "").lower(), d.get("annotationColor") or "none")] += 1
+                n_ann += 1
+            for sig, cnt in seen.items():
+                if cnt > 1:
+                    dup_ann.append((k, p["key"], sig[1], (sig[2][:60] or sig[3][:60]), cnt))
+        totals.update(colours)
+        tags = {t.get("tag") for t in it["data"].get("tags") or []}
+        row = {
+            "item": k,
+            "collection": coll,
+            "title": (it["data"].get("title") or "")[:120],
+            "doi": it["data"].get("DOI") or "",
+            "has_tag": (tag in tags) if tag else "",
+            "pdfs": len(pdfs),
+            "review_notes": len(notes),
+            "annotations": n_ann,
+        }
+        row.update({c: colours.get(c, 0) for c in COLOURS.values()})
+        other = sum(v for c, v in colours.items() if c not in COLOURS.values())
+        row["other_colour"] = other
+        rows.append(row)
+
+    fields = [
+        "item",
+        "collection",
+        "title",
+        "doi",
+        "has_tag",
+        "pdfs",
+        "review_notes",
+        "annotations",
+        *COLOURS.values(),
+        "other_colour",
+    ]
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=fields, lineterminator="\n")
+    w.writeheader()
+    w.writerows(sorted(rows, key=lambda r: (r["collection"], r["title"])))
+    dest = rdir / "5-final" / "zotero_audit.csv"
+    arlib.atomic_write_text(dest, buf.getvalue())
+
+    print(
+        f"collection {name!r} ({len(colls)} with sub-collections): items={len(items)} "
+        f"with_pdf={sum(1 for r in rows if r['pdfs'])} annotated={sum(1 for r in rows if r['annotations'])} "
+        f"annotations={sum(r['annotations'] for r in rows)} by_colour={dict(totals)}"
+    )
+    print(f"items without a '{note_title}' note: {[r['item'] for r in rows if r['review_notes'] == 0]}")
+    if tag:
+        print(f"items without the tag '{tag}': {[r['item'] for r in rows if r['has_tag'] is False]}")
+    print(f"items with more than one PDF: {[(r['item'], r['pdfs']) for r in rows if r['pdfs'] > 1]}")
+    print(f"duplicate items: {dup_items}")
+    print(f"duplicate review notes: {dup_notes}")
+    print(f"duplicate annotations ({len(dup_ann)}): {dup_ann[:40]}")
+    print(f"wrote {arlib.rel(rdir, dest)}")
+    return 1 if (dup_items or dup_notes or dup_ann) else 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

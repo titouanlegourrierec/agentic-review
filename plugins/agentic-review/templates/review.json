@@ -1,0 +1,77 @@
+{
+  "version": 1,
+  "topic": "",
+  "question": "",
+  "time_window": "",
+  "scope_notes": "",
+  "language": "English",
+  "scale": "standard",
+  "autonomy": "interactive",
+  "targets": {},
+  "tiers": [
+    "core",
+    "boundary",
+    "adjacent"
+  ],
+  "zotero": {
+    "enabled": true,
+    "collection": "",
+    "tag": "",
+    "note_title": "Review notes"
+  },
+  "code_audit": {
+    "enabled": false
+  },
+  "edition": {
+    "title": "",
+    "port": 47815,
+    "storage_key": ""
+  },
+  "review_sections": [
+    {
+      "id": "s0",
+      "heading": "Summary"
+    },
+    {
+      "id": "s1",
+      "heading": "Scope and method"
+    },
+    {
+      "id": "s2",
+      "heading": "Taxonomy"
+    },
+    {
+      "id": "s3",
+      "heading": "Key approaches"
+    },
+    {
+      "id": "s4",
+      "heading": "Methodology comparison"
+    },
+    {
+      "id": "s5",
+      "heading": "Methodological rigor"
+    },
+    {
+      "id": "s6",
+      "heading": "What the evidence supports"
+    },
+    {
+      "id": "s7",
+      "heading": "Research gaps and future directions"
+    },
+    {
+      "id": "s8",
+      "heading": "Recommendations"
+    },
+    {
+      "id": "s9",
+      "heading": "References"
+    }
+  ],
+  "models": {},
+  "limits": {
+    "annotators_parallel": 8,
+    "confirm_above_agents": 10
+  }
+}
