@@ -1,6 +1,6 @@
 [project]
 name = "agentic-review"
-version = "0.3.1"
+version = "0.1.0"
 description = "A Claude Code plugin that runs a critical literature review with a team of AI agents."
 readme = "README.md"
 license = "MIT"

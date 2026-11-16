@@ -1,6 +1,6 @@
 # Status
 
-Version 0.3.1. The plugin is young: one `mini` review has run end to end through it, with and without Zotero.
+Version 0.1.0. The plugin is young: one `mini` review has run end to end through it, with and without Zotero.
 
 ## Verified
 

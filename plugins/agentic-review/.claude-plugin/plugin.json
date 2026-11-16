@@ -1,6 +1,6 @@
 {
   "name": "agentic-review",
-  "version": "0.3.1",
+  "version": "0.1.0",
   "description": "Critical literature reviews run by a team of specialised agents: a shared protocol, parallel discovery, analysis, independent rigor, omission and claim checks, a lead reviewer, optional code audits, and one agent per cited paper that highlights the supporting passage in Zotero. Four checkpoints where you decide; everything else runs on its own.",
   "author": {
     "name": "Titouan Le Gourrierec",

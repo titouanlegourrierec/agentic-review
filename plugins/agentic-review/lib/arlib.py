@@ -22,7 +22,7 @@ from pathlib import Path
 
 PLUGIN_ROOT = Path(__file__).resolve().parent.parent
 TEMPLATES = PLUGIN_ROOT / "templates"
-USER_AGENT = "agentic-review/0.3 (+https://github.com)"
+USER_AGENT = "agentic-review/0.1 (+https://github.com)"
 TIERS = ["core", "boundary", "adjacent"]
 TIER_TITLES = {"core": "Core", "boundary": "Boundary", "adjacent": "Adjacent"}
 DEPTH_RANK = {"full-text": 3, "abstract": 2, "secondary": 1}
